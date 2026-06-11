@@ -318,9 +318,9 @@ namespace CodexApiSwitcher
             backupLocationLabel.AutoEllipsis = true;
             Controls.Add(backupLocationLabel);
 
-            watermarkLabel.Text = "made by Ajin";
-            watermarkLabel.Location = new Point(520, 595);
-            watermarkLabel.Size = new Size(140, 24);
+            watermarkLabel.Text = "github.com/yin-yizhen/codex-api-switcher";
+            watermarkLabel.Location = new Point(300, 595);
+            watermarkLabel.Size = new Size(360, 24);
             watermarkLabel.ForeColor = Color.FromArgb(145, 145, 145);
             watermarkLabel.TextAlign = ContentAlignment.MiddleRight;
             Controls.Add(watermarkLabel);
