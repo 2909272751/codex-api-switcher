@@ -24,21 +24,6 @@ Codex API Switcher 是一个 Windows 图形界面工具，用来在 Codex Deskto
 - `work/build-codex-api-switcher.ps1`：构建脚本。
 - `work/test-codex-api-switcher-exe.ps1`：回归测试。
 
-### 构建
-
-```powershell
-powershell -ExecutionPolicy Bypass -File work/build-codex-api-switcher.ps1
-```
-
-### 测试
-
-```powershell
-powershell -ExecutionPolicy Bypass -File work/test-codex-api-switcher-exe.ps1
-```
-
-### 安全说明
-
-不要提交你的真实 Codex 根目录、`credential.dat`、`settings.dat`、备份、会话文件、`auth.json` 或 API Key。本仓库已经通过 `.gitignore` 排除这些文件。
 
 ## English
 
@@ -62,18 +47,3 @@ Codex API Switcher is a Windows GUI tool for switching Codex Desktop between off
 - `work/build-codex-api-switcher.ps1`: build script.
 - `work/test-codex-api-switcher-exe.ps1`: regression test.
 
-### Build
-
-```powershell
-powershell -ExecutionPolicy Bypass -File work/build-codex-api-switcher.ps1
-```
-
-### Test
-
-```powershell
-powershell -ExecutionPolicy Bypass -File work/test-codex-api-switcher-exe.ps1
-```
-
-### Safety Notes
-
-Do not commit your real Codex home, `credential.dat`, `settings.dat`, backups, session files, `auth.json`, or API keys. This repository intentionally ignores those files.
