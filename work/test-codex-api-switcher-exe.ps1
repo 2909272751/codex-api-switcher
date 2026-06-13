@@ -27,8 +27,10 @@ base_url = "https://old.example"
 [System.IO.File]::WriteAllText($config, $fixture, [System.Text.UTF8Encoding]::new($false))
 
 $statePath = Join-Path $root "state_5.sqlite"
+$activeStatePath = Join-Path $root "sqlite\state_5.sqlite"
 $sessionDir = Join-Path $root "sessions\2026\06\11"
 New-Item -ItemType Directory -Path $sessionDir | Out-Null
+New-Item -ItemType Directory -Path (Split-Path -Parent $activeStatePath) | Out-Null
 $userRollout = Join-Path $sessionDir "rollout-user-1.jsonl"
 $cliRollout = Join-Path $sessionDir "rollout-cli-1.jsonl"
 $bodyLine = '{"type":"event_msg","payload":{"type":"user_message","message":"正文必须保持不变"}}'
@@ -36,6 +38,7 @@ $bodyLine = '{"type":"event_msg","payload":{"type":"user_message","message":"正
 [System.IO.File]::WriteAllText($cliRollout, '{"type":"session_meta","payload":{"id":"cli-1","model_provider":"OpenAI","cwd":"D:\\project"}}' + "`n" + $bodyLine + "`n", [System.Text.UTF8Encoding]::new($false))
 python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); c.execute('create table threads(id text primary key, rollout_path text not null, source text not null, first_user_message text not null, has_user_event integer not null default 0, model_provider text not null)'); c.executemany('insert into threads values(?,?,?,?,?,?)',[('user-1',r'\\?\$userRollout','vscode','hello',0,'openai'),('cli-1',r'$cliRollout','cli','hello',0,'OpenAI'),('agent-1','', '{\""subagent\"":{}}','worker',0,'openai')]); c.commit(); c.close()"
 if ($LASTEXITCODE -ne 0) { throw "Failed to create history synchronization fixture." }
+Copy-Item -LiteralPath $statePath -Destination $activeStatePath
 
 $originalPath = $env:PATH
 try {
@@ -56,8 +59,12 @@ if ($third -match 'test-token-not-a-real-key') { throw "Plaintext test key leake
 
 $thirdCounts = python (Join-Path $PSScriptRoot "check-sidebar-fixture.py") $statePath
 if ($thirdCounts -ne "2,2,0") { throw "Third-party switch changed the wrong visible rows: $thirdCounts" }
+$activeThirdCounts = python (Join-Path $PSScriptRoot "check-sidebar-fixture.py") $activeStatePath
+if ($activeThirdCounts -ne "2,2,0") { throw "Third-party switch did not update the active SQLite database: $activeThirdCounts" }
 $thirdProviders = python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
 if ($thirdProviders -ne "openai,custom,custom") { throw "Third-party history synchronization failed: $thirdProviders" }
+$activeThirdProviders = python -c "import sqlite3; c=sqlite3.connect(r'$activeStatePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
+if ($activeThirdProviders -ne "openai,custom,custom") { throw "Active SQLite third-party synchronization failed: $activeThirdProviders" }
 $thirdUserMeta = (Get-Content -LiteralPath $userRollout -Encoding UTF8 -TotalCount 1 | ConvertFrom-Json).payload.model_provider
 $thirdCliMeta = (Get-Content -LiteralPath $cliRollout -Encoding UTF8 -TotalCount 1 | ConvertFrom-Json).payload.model_provider
 if ($thirdUserMeta -ne "custom" -or $thirdCliMeta -ne "custom") { throw "Third-party JSONL metadata synchronization failed." }
@@ -82,6 +89,8 @@ if ($official -notmatch '(?m)^\[mcp_servers\.example\]\r?$') { throw "Official s
 
 $officialProviders = python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
 if ($officialProviders -ne "openai,openai,openai") { throw "Official history synchronization failed: $officialProviders" }
+$activeOfficialProviders = python -c "import sqlite3; c=sqlite3.connect(r'$activeStatePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
+if ($activeOfficialProviders -ne "openai,openai,openai") { throw "Active SQLite official synchronization failed: $activeOfficialProviders" }
 $officialUserMeta = (Get-Content -LiteralPath $userRollout -Encoding UTF8 -TotalCount 1 | ConvertFrom-Json).payload.model_provider
 $officialCliMeta = (Get-Content -LiteralPath $cliRollout -Encoding UTF8 -TotalCount 1 | ConvertFrom-Json).payload.model_provider
 if ($officialUserMeta -ne "openai" -or $officialCliMeta -ne "openai") { throw "Official JSONL metadata synchronization failed." }
@@ -115,8 +124,8 @@ if ($reset -notmatch '(?m)^disable_response_storage = true\r?$') { throw "Reset 
 
 $backups = Get-ChildItem -LiteralPath (Join-Path $root "config-switcher-backups") -File -Filter "config.toml.*.bak"
 if ($backups.Count -lt 3) { throw "Expected automatic backups." }
-$historyBackups = Get-ChildItem -LiteralPath (Join-Path $root "history_sync_backups") -File -Filter "state_5.sqlite.pre-provider-sync.*.bak"
-if ($historyBackups.Count -lt 2) { throw "Expected automatic history database backups." }
+$historyBackups = Get-ChildItem -LiteralPath (Join-Path $root "history_sync_backups") -File -Filter "state_5.sqlite.*.pre-provider-sync.*.bak"
+if ($historyBackups.Count -lt 4) { throw "Expected automatic backups for both history databases." }
 $sessionBackups = Get-ChildItem -LiteralPath (Join-Path $root "history_sync_backups") -Recurse -File -Filter "*rollout-*.jsonl"
 if ($sessionBackups.Count -lt 4) { throw "Expected automatic JSONL metadata backups." }
 
@@ -125,6 +134,8 @@ if ($LASTEXITCODE -ne 0) { throw "Generated TOML is invalid." }
 
 python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); c.execute('update threads set has_user_event=0'); c.commit(); c.close()"
 if ($LASTEXITCODE -ne 0) { throw "Failed to reset sidebar repair fixture." }
+python -c "import sqlite3; c=sqlite3.connect(r'$activeStatePath'); c.execute('update threads set has_user_event=0'); c.commit(); c.close()"
+if ($LASTEXITCODE -ne 0) { throw "Failed to reset active sidebar repair fixture." }
 
 try {
     $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -136,5 +147,7 @@ if ($LASTEXITCODE -ne 0) { throw "Sidebar repair failed with exit code $LASTEXIT
 
 $counts = python (Join-Path $PSScriptRoot "check-sidebar-fixture.py") $statePath
 if ($counts -ne "2,2,0") { throw "Sidebar repair changed the wrong thread rows: $counts" }
+$activeCounts = python (Join-Path $PSScriptRoot "check-sidebar-fixture.py") $activeStatePath
+if ($activeCounts -ne "2,2,0") { throw "Sidebar repair did not update the active SQLite database: $activeCounts" }
 
-Write-Output "PASS: Persistent SQLite and JSONL provider synchronization, unchanged conversation content, Python-free switching, model configuration reset, URL normalization, DPAPI storage, backups, TOML parsing, sidebar repair, and config preservation."
+Write-Output "PASS: Root and active SQLite synchronization, JSONL provider synchronization, unchanged conversation content, Python-free switching, model configuration reset, URL normalization, DPAPI storage, backups, TOML parsing, sidebar repair, and config preservation."

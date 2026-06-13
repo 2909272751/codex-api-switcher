@@ -475,7 +475,7 @@ namespace CodexApiSwitcher
         private void RepairSidebar(object sender, EventArgs e)
         {
             DialogResult confirmed = MessageBox.Show(
-                "此操作不是普通 API 切换。\n\n它会先备份 state_5.sqlite，然后恢复顶层用户会话的可见标记。不会改动会话 JSONL、记忆文件或 auth.json。\n\n请先彻底退出 Codex，再点击“是”。",
+                "此操作不是普通 API 切换。\n\n它会自动识别并备份新旧状态数据库，然后恢复顶层用户会话的可见标记。不会改动会话 JSONL、记忆文件或 auth.json。\n\n请先彻底退出 Codex，再点击“是”。",
                 "确认修复会话列表",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
@@ -693,10 +693,11 @@ namespace CodexApiSwitcher
         internal string RepairConversationIndex()
         {
             AssertConfig();
-            string statePath = Path.Combine(root, "state_5.sqlite");
-            if (!File.Exists(statePath))
+            List<string> statePaths = GetStateDatabasePaths();
+            if (statePaths.Count == 0)
             {
-                throw new FileNotFoundException("state_5.sqlite was not found.", statePath);
+                throw new FileNotFoundException(
+                    "state_5.sqlite was not found in the Codex root or sqlite subdirectory.");
             }
 
             if (IsRealCodexRoot() && Process.GetProcessesByName("Codex").Length > 0)
@@ -704,24 +705,32 @@ namespace CodexApiSwitcher
                 throw new InvalidOperationException("Codex 仍在运行。请彻底退出 Codex 后再执行会话列表修复。");
             }
 
-            string backupPath = CreateStateBackup(statePath, "pre-sidebar-repair");
-            using (NativeSqlite database = NativeSqlite.Open(statePath))
+            int restored = 0;
+            List<string> backupPaths = new List<string>();
+            foreach (string statePath in statePaths)
             {
-                EnsureThreadColumns(database);
-                int before = database.ScalarInt(
-                    "select count(*) from threads where has_user_event = 1");
-                database.Execute(
-                    "update threads set has_user_event = 1 " +
-                    "where has_user_event = 0 and first_user_message <> '' " +
-                    "and source in ('vscode','cli')");
-                EnsureIntegrity(database);
-                int after = database.ScalarInt(
-                    "select count(*) from threads where has_user_event = 1");
-                return string.Format(
-                    "已恢复 {0} 条会话的侧栏可见标记。备份：{1}",
-                    after - before,
-                    backupPath);
+                backupPaths.Add(CreateStateBackup(statePath, "pre-sidebar-repair"));
+                using (NativeSqlite database = NativeSqlite.Open(statePath))
+                {
+                    EnsureThreadColumns(database);
+                    int before = database.ScalarInt(
+                        "select count(*) from threads where has_user_event = 1");
+                    database.Execute(
+                        "update threads set has_user_event = 1 " +
+                        "where has_user_event = 0 and first_user_message <> '' " +
+                        "and source in ('vscode','cli')");
+                    EnsureIntegrity(database);
+                    int after = database.ScalarInt(
+                        "select count(*) from threads where has_user_event = 1");
+                    restored += after - before;
+                }
             }
+
+            return string.Format(
+                "已检查 {0} 套状态数据库，恢复 {1} 条会话的侧栏可见标记。备份：{2}",
+                statePaths.Count,
+                restored,
+                string.Join("；", backupPaths.ToArray()));
         }
 
         internal void SwitchToOfficial(string model)
@@ -856,8 +865,8 @@ namespace CodexApiSwitcher
 
         private string SynchronizeConversationProvider(string targetProvider)
         {
-            string statePath = Path.Combine(root, "state_5.sqlite");
-            if (!File.Exists(statePath))
+            List<string> statePaths = GetStateDatabasePaths();
+            if (statePaths.Count == 0)
             {
                 return "No state database exists yet; history synchronization was skipped.";
             }
@@ -873,55 +882,98 @@ namespace CodexApiSwitcher
                 throw new InvalidOperationException("Unsupported provider: " + targetProvider);
             }
 
-            string backupPath = CreateStateBackup(statePath, "pre-provider-sync");
             string provider = targetProvider.Replace("'", "''");
             string where = "first_user_message <> '' and source in ('vscode','cli')";
-            using (NativeSqlite database = NativeSqlite.Open(statePath))
+            List<string> rolloutPaths = new List<string>();
+            foreach (string statePath in statePaths)
             {
-                EnsureThreadColumns(database);
-                List<string> rolloutPaths = database.QueryTextColumn(
-                    "select rollout_path from threads where " + where + " order by rollout_path");
-                SessionMetadataSyncResult metadataResult =
-                    SynchronizeSessionMetadata(rolloutPaths, targetProvider);
-                try
+                using (NativeSqlite database = NativeSqlite.Open(statePath))
                 {
-                    database.Execute("begin immediate");
-                    int total = database.ScalarInt("select count(*) from threads where " + where);
-                    int providerChanges = database.ScalarInt(
-                        "select count(*) from threads where " + where +
-                        " and model_provider <> '" + provider + "'");
-                    int visibilityChanges = database.ScalarInt(
-                        "select count(*) from threads where " + where + " and has_user_event = 0");
-                    database.Execute(
-                        "update threads set model_provider = '" + provider +
-                        "', has_user_event = 1 where " + where);
-                    EnsureIntegrity(database);
-                    int remaining = database.ScalarInt(
-                        "select count(*) from threads where " + where +
-                        " and model_provider <> '" + provider + "'");
-                    if (remaining != 0)
-                    {
-                        throw new InvalidOperationException(
-                            "Provider synchronization incomplete: " + remaining + " rows remain.");
-                    }
-                    database.Execute("commit");
-                    return string.Format(
-                        "已同步 {0} 条用户会话到 {1}（数据库 provider 变更 {2} 条，JSONL 元数据变更 {3} 条，可见标记恢复 {4} 条）。数据库备份：{5}；会话备份：{6}",
-                        total,
-                        targetProvider,
-                        providerChanges,
-                        metadataResult.ChangedCount,
-                        visibilityChanges,
-                        backupPath,
-                        metadataResult.BackupDirectory);
-                }
-                catch
-                {
-                    try { database.Execute("rollback"); } catch { }
-                    metadataResult.Rollback();
-                    throw;
+                    EnsureThreadColumns(database);
+                    rolloutPaths.AddRange(database.QueryTextColumn(
+                        "select rollout_path from threads where " + where + " order by rollout_path"));
                 }
             }
+
+            SessionMetadataSyncResult metadataResult =
+                SynchronizeSessionMetadata(
+                    rolloutPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                    targetProvider);
+            List<string> backupPaths = new List<string>();
+            int total = 0;
+            int providerChanges = 0;
+            int visibilityChanges = 0;
+            try
+            {
+                foreach (string statePath in statePaths)
+                {
+                    backupPaths.Add(CreateStateBackup(statePath, "pre-provider-sync"));
+                    using (NativeSqlite database = NativeSqlite.Open(statePath))
+                    {
+                        EnsureThreadColumns(database);
+                        database.Execute("begin immediate");
+                        try
+                        {
+                            total += database.ScalarInt(
+                                "select count(*) from threads where " + where);
+                            providerChanges += database.ScalarInt(
+                                "select count(*) from threads where " + where +
+                                " and model_provider <> '" + provider + "'");
+                            visibilityChanges += database.ScalarInt(
+                                "select count(*) from threads where " + where +
+                                " and has_user_event = 0");
+                            database.Execute(
+                                "update threads set model_provider = '" + provider +
+                                "', has_user_event = 1 where " + where);
+                            EnsureIntegrity(database);
+                            int remaining = database.ScalarInt(
+                                "select count(*) from threads where " + where +
+                                " and model_provider <> '" + provider + "'");
+                            if (remaining != 0)
+                            {
+                                throw new InvalidOperationException(
+                                    "Provider synchronization incomplete in " + statePath +
+                                    ": " + remaining + " rows remain.");
+                            }
+                            database.Execute("commit");
+                        }
+                        catch
+                        {
+                            try { database.Execute("rollback"); } catch { }
+                            throw;
+                        }
+                    }
+                }
+
+                return string.Format(
+                    "已同步 {0} 套状态数据库中的 {1} 条用户会话到 {2}（数据库 provider 变更 {3} 条，JSONL 元数据变更 {4} 条，可见标记恢复 {5} 条）。数据库备份：{6}；会话备份：{7}",
+                    statePaths.Count,
+                    total,
+                    targetProvider,
+                    providerChanges,
+                    metadataResult.ChangedCount,
+                    visibilityChanges,
+                    string.Join("；", backupPaths.ToArray()),
+                    metadataResult.BackupDirectory);
+            }
+            catch
+            {
+                metadataResult.Rollback();
+                throw;
+            }
+        }
+
+        private List<string> GetStateDatabasePaths()
+        {
+            string[] candidates =
+            {
+                Path.Combine(root, "sqlite", "state_5.sqlite"),
+                Path.Combine(root, "state_5.sqlite")
+            };
+            return candidates
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         private SessionMetadataSyncResult SynchronizeSessionMetadata(
@@ -1078,9 +1130,15 @@ namespace CodexApiSwitcher
             string directory = Path.Combine(root, "history_sync_backups");
             Directory.CreateDirectory(directory);
             string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
+            string location = string.Equals(
+                Path.GetDirectoryName(Path.GetFullPath(statePath)).TrimEnd('\\'),
+                Path.GetFullPath(root).TrimEnd('\\'),
+                StringComparison.OrdinalIgnoreCase)
+                ? "root"
+                : "sqlite";
             string backupPath = Path.Combine(
                 directory,
-                "state_5.sqlite." + purpose + "." + stamp + ".bak");
+                "state_5.sqlite." + location + "." + purpose + "." + stamp + ".bak");
             NativeSqlite.Backup(statePath, backupPath);
             return backupPath;
         }
