@@ -13,6 +13,7 @@ Add-Type `
         "System.dll",
         "System.Core.dll",
         "System.Drawing.dll",
+        "System.Net.Http.dll",
         "System.Security.dll",
         "System.Web.Extensions.dll",
         "System.Windows.Forms.dll"

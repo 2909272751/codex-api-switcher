@@ -96,6 +96,24 @@ $officialCliMeta = (Get-Content -LiteralPath $cliRollout -Encoding UTF8 -TotalCo
 if ($officialUserMeta -ne "openai" -or $officialCliMeta -ne "openai") { throw "Official JSONL metadata synchronization failed." }
 if ((Get-Content -LiteralPath $cliRollout -Encoding UTF8)[1] -ne $bodyLine) { throw "Official synchronization changed conversation content." }
 
+# A complete rollback must restore only pre-switch rows. Sessions created after
+# the switch are intentionally absent from the transaction manifest and survive.
+$newRollout = Join-Path $sessionDir "rollout-created-after-switch.jsonl"
+[System.IO.File]::WriteAllText($newRollout, '{"type":"session_meta","payload":{"id":"new-after-switch","model_provider":"openai","cwd":"D:\\project"}}' + "`n" + $bodyLine + "`n", [System.Text.UTF8Encoding]::new($false))
+python -c "import sqlite3; p=[r'$statePath',r'$activeStatePath']; [sqlite3.connect(x).execute('insert into threads values(?,?,?,?,?,?)',('new-after-switch',r'$newRollout','cli','new',1,'openai')).connection.commit() for x in p]"
+if ($LASTEXITCODE -ne 0) { throw "Failed to create the post-switch rollback fixture." }
+
+& $exe --rollback --root $root
+if ($LASTEXITCODE -ne 0) { throw "Complete rollback failed with exit code $LASTEXITCODE." }
+$rollbackConfig = Get-Content -LiteralPath $config -Raw -Encoding UTF8
+if ($rollbackConfig -notmatch '(?m)^model_provider = "custom"\r?$') { throw "Rollback did not restore the previous provider configuration." }
+$rollbackProviders = python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
+if ($rollbackProviders -ne "openai,custom,openai,custom") { throw "Rollback removed or rewrote the post-switch session: $rollbackProviders" }
+if (-not (Test-Path -LiteralPath $newRollout)) { throw "Rollback deleted a post-switch session file." }
+
+& $exe --switch-official --root $root --model "official-test-model"
+if ($LASTEXITCODE -ne 0) { throw "Official switch after rollback failed with exit code $LASTEXITCODE." }
+
 $brokenFixture = @'
 model = "broken-model"
 disable_response_storage = true
@@ -146,8 +164,8 @@ try {
 if ($LASTEXITCODE -ne 0) { throw "Sidebar repair failed with exit code $LASTEXITCODE." }
 
 $counts = python (Join-Path $PSScriptRoot "check-sidebar-fixture.py") $statePath
-if ($counts -ne "2,2,0") { throw "Sidebar repair changed the wrong thread rows: $counts" }
+if ($counts -ne "3,3,0") { throw "Sidebar repair changed the wrong thread rows: $counts" }
 $activeCounts = python (Join-Path $PSScriptRoot "check-sidebar-fixture.py") $activeStatePath
-if ($activeCounts -ne "2,2,0") { throw "Sidebar repair did not update the active SQLite database: $activeCounts" }
+if ($activeCounts -ne "3,3,0") { throw "Sidebar repair did not update the active SQLite database: $activeCounts" }
 
-Write-Output "PASS: Root and active SQLite synchronization, JSONL provider synchronization, unchanged conversation content, Python-free switching, model configuration reset, URL normalization, DPAPI storage, backups, TOML parsing, sidebar repair, and config preservation."
+Write-Output "PASS: Root and active SQLite synchronization, incremental rollback preserving post-switch sessions, JSONL provider synchronization, unchanged conversation content, Python-free switching, model configuration reset, URL normalization, DPAPI storage, backups, TOML parsing, sidebar repair, and config preservation."

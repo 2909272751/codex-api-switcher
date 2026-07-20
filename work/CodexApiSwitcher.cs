@@ -1,9 +1,13 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -84,7 +88,7 @@ namespace CodexApiSwitcher
 
             if (options.ContainsKey("--switch-official"))
             {
-                string model = GetOption(options, "--model", "gpt-5.5");
+                string model = GetOption(options, "--model", string.Empty);
                 service.SwitchToOfficial(model);
                 Console.WriteLine("Switched to official OpenAI login.");
                 return 0;
@@ -99,7 +103,7 @@ namespace CodexApiSwitcher
 
             if (options.ContainsKey("--reset-config"))
             {
-                string model = GetOption(options, "--model", "gpt-5.5");
+                string model = GetOption(options, "--model", string.Empty);
                 service.ResetModelConfiguration(model);
                 Console.WriteLine("Rebuilt the model configuration for official OpenAI login.");
                 return 0;
@@ -108,6 +112,23 @@ namespace CodexApiSwitcher
             if (options.ContainsKey("--repair-sidebar"))
             {
                 Console.WriteLine(service.RepairConversationIndex());
+                return 0;
+            }
+
+            if (options.ContainsKey("--test-provider"))
+            {
+                string url = RequireOption(options, "--url");
+                string model = RequireOption(options, "--model");
+                string key = GetOption(options, "--key", string.Empty);
+                Console.WriteLine(service.TestProvider(url, model, key));
+                return 0;
+            }
+
+            if (options.ContainsKey("--list-models"))
+            {
+                string url = RequireOption(options, "--url");
+                string key = GetOption(options, "--key", string.Empty);
+                foreach (string model in service.ListModels(url, key)) Console.WriteLine(model);
                 return 0;
             }
 
@@ -175,6 +196,9 @@ namespace CodexApiSwitcher
         private readonly Button rollbackButton = new Button();
         private readonly Button repairButton = new Button();
         private readonly Button resetConfigButton = new Button();
+        private readonly Button testProviderButton = new Button();
+        private readonly Button listModelsButton = new Button();
+        private readonly CheckBox preflightCheckBox = new CheckBox();
 
         internal MainForm()
         {
@@ -261,6 +285,24 @@ namespace CodexApiSwitcher
             keyStateLabel.AutoSize = true;
             keyStateLabel.ForeColor = Color.DimGray;
             Controls.Add(keyStateLabel);
+
+            preflightCheckBox.Text = "切换前自动预检";
+            preflightCheckBox.Checked = true;
+            preflightCheckBox.Location = new Point(160, 333);
+            preflightCheckBox.Size = new Size(150, 24);
+            Controls.Add(preflightCheckBox);
+
+            testProviderButton.Text = "测试接口";
+            testProviderButton.Location = new Point(470, 330);
+            testProviderButton.Size = new Size(90, 30);
+            testProviderButton.Click += TestProvider;
+            Controls.Add(testProviderButton);
+
+            listModelsButton.Text = "读取模型";
+            listModelsButton.Location = new Point(570, 330);
+            listModelsButton.Size = new Size(90, 30);
+            listModelsButton.Click += ListModels;
+            Controls.Add(listModelsButton);
 
             thirdPartyButton.Text = "切换到第三方 API";
             thirdPartyButton.Location = new Point(30, 372);
@@ -411,6 +453,48 @@ namespace CodexApiSwitcher
             rollbackButton.Enabled = enabled;
             repairButton.Enabled = enabled;
             resetConfigButton.Enabled = enabled;
+            testProviderButton.Enabled = enabled;
+            listModelsButton.Enabled = enabled;
+        }
+
+        private void TestProvider(object sender, EventArgs e)
+        {
+            RunAction(delegate
+            {
+                string result = GetService().TestProvider(urlBox.Text, thirdPartyModelBox.Text, keyBox.Text);
+                MessageBox.Show(result, "接口测试通过", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            });
+        }
+
+        private void ListModels(object sender, EventArgs e)
+        {
+            RunAction(delegate
+            {
+                List<string> models = GetService().ListModels(urlBox.Text, keyBox.Text);
+                if (models.Count == 0) throw new InvalidOperationException("接口返回了空模型列表。");
+                using (Form picker = new Form())
+                using (ListBox list = new ListBox())
+                using (Button select = new Button())
+                {
+                    picker.Text = "选择第三方模型";
+                    picker.StartPosition = FormStartPosition.CenterParent;
+                    picker.ClientSize = new Size(460, 380);
+                    list.Dock = DockStyle.Top;
+                    list.Height = 330;
+                    list.Items.AddRange(models.Cast<object>().ToArray());
+                    select.Text = "使用所选模型";
+                    select.Dock = DockStyle.Bottom;
+                    select.Height = 38;
+                    select.DialogResult = DialogResult.OK;
+                    picker.Controls.Add(list);
+                    picker.Controls.Add(select);
+                    picker.AcceptButton = select;
+                    if (picker.ShowDialog(this) == DialogResult.OK && list.SelectedItem != null)
+                    {
+                        thirdPartyModelBox.Text = Convert.ToString(list.SelectedItem);
+                    }
+                }
+            });
         }
 
         private void SwitchThirdParty(object sender, EventArgs e)
@@ -429,6 +513,20 @@ namespace CodexApiSwitcher
                 if (string.IsNullOrWhiteSpace(key) && !service.HasStoredToken())
                 {
                     throw new InvalidOperationException("首次切换第三方 API 时必须填写 API Key。");
+                }
+
+                if (preflightCheckBox.Checked)
+                {
+                    string probe = service.TestProvider(url, model, key);
+                    if (probe.IndexOf("WARNING:", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        DialogResult continueSwitch = MessageBox.Show(
+                            probe + "\n\n普通 Responses 请求可用，但长会话压缩可能失败。仍要切换吗？",
+                            "兼容性预检警告",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Warning);
+                        if (continueSwitch != DialogResult.Yes) return;
+                    }
                 }
 
                 service.SwitchToThirdParty(url, model, key);
@@ -554,6 +652,8 @@ namespace CodexApiSwitcher
         private readonly string credentialPath;
         private readonly string settingsPath;
         private readonly string backupDirectory;
+        private readonly string transactionDirectory;
+        private readonly string helperPath;
 
         internal SwitcherService(string rootPath, string exePath)
         {
@@ -569,6 +669,8 @@ namespace CodexApiSwitcher
             credentialPath = Path.Combine(dataDirectory, "credential.dat");
             settingsPath = Path.Combine(dataDirectory, "settings.dat");
             backupDirectory = Path.Combine(root, "config-switcher-backups");
+            transactionDirectory = Path.Combine(root, "api-switcher", "transactions");
+            helperPath = Path.Combine(root, "api-switcher", "bin", "CodexApiCredentialHelper.exe");
         }
 
         internal ProviderStatus GetStatus()
@@ -647,6 +749,110 @@ namespace CodexApiSwitcher
             }
         }
 
+        internal List<string> ListModels(string url, string key)
+        {
+            string token = string.IsNullOrWhiteSpace(key) ? ReadToken() : key.Trim();
+            string baseUrl = NormalizeBaseUrl(url);
+            using (HttpClient client = CreateApiClient(token))
+            {
+                HttpResponseMessage response = client.GetAsync(baseUrl + "/models").GetAwaiter().GetResult();
+                string body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new InvalidOperationException("Model discovery failed (HTTP " + (int)response.StatusCode + "): " + RedactError(body));
+                }
+                Dictionary<string, object> envelope = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body);
+                object dataValue;
+                IEnumerable data = envelope.TryGetValue("data", out dataValue) ? dataValue as IEnumerable : null;
+                if (data == null) return new List<string>();
+                return data.Cast<object>().Select(item => item as Dictionary<string, object>)
+                    .Where(item => item != null && item.ContainsKey("id"))
+                    .Select(item => Convert.ToString(item["id"]))
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+        }
+
+        internal string TestProvider(string url, string model, string key)
+        {
+            string token = string.IsNullOrWhiteSpace(key) ? ReadToken() : key.Trim();
+            string baseUrl = NormalizeBaseUrl(url);
+            Dictionary<string, object> payload = new Dictionary<string, object>();
+            payload["model"] = model.Trim();
+            payload["input"] = "Reply with OK.";
+            payload["stream"] = true;
+            payload["tools"] = new object[]
+            {
+                new Dictionary<string, object>
+                {
+                    { "type", "function" },
+                    { "name", "switcher_probe" },
+                    { "description", "Compatibility probe. Do not call unless needed." },
+                    { "parameters", new Dictionary<string, object> { { "type", "object" }, { "properties", new Dictionary<string, object>() } } }
+                }
+            };
+            string json = new JavaScriptSerializer().Serialize(payload);
+            using (HttpClient client = CreateApiClient(token))
+            using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/responses"))
+            {
+                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                HttpResponseMessage response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
+                string mediaType = response.Content.Headers.ContentType == null ? string.Empty : response.Content.Headers.ContentType.MediaType;
+                string sample = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new InvalidOperationException("Responses API check failed (HTTP " + (int)response.StatusCode + "): " + RedactError(sample));
+                }
+                bool eventStream = mediaType.IndexOf("text/event-stream", StringComparison.OrdinalIgnoreCase) >= 0 || sample.IndexOf("data:", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!eventStream)
+                {
+                    throw new InvalidOperationException("The endpoint responded, but did not return a Responses API event stream.");
+                }
+                string compactStatus = TestCompact(client, baseUrl, model.Trim());
+                return "PASS: authentication, model, Responses API, SSE streaming, and function-tool schema are available. " + compactStatus;
+            }
+        }
+
+        private static string TestCompact(HttpClient client, string baseUrl, string model)
+        {
+            Dictionary<string, object> userContent = new Dictionary<string, object>();
+            userContent["type"] = "input_text";
+            userContent["text"] = "Compatibility probe.";
+            Dictionary<string, object> userItem = new Dictionary<string, object>();
+            userItem["type"] = "message";
+            userItem["role"] = "user";
+            userItem["content"] = new object[] { userContent };
+            Dictionary<string, object> payload = new Dictionary<string, object>();
+            payload["model"] = model;
+            payload["input"] = new object[] { userItem };
+            payload["instructions"] = "Compact the supplied test input.";
+            using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/responses/compact"))
+            {
+                request.Content = new StringContent(new JavaScriptSerializer().Serialize(payload), Encoding.UTF8, "application/json");
+                HttpResponseMessage response = client.SendAsync(request).GetAwaiter().GetResult();
+                string body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                return response.IsSuccessStatusCode
+                    ? "Compact endpoint is available."
+                    : "WARNING: /responses/compact returned HTTP " + (int)response.StatusCode + " (long conversations may fail): " + RedactError(body);
+            }
+        }
+
+        private static HttpClient CreateApiClient(string token)
+        {
+            HttpClient client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(30);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            return client;
+        }
+
+        private static string RedactError(string value)
+        {
+            string clean = (value ?? string.Empty).Replace("\r", " ").Replace("\n", " ");
+            return clean.Length <= 500 ? clean : clean.Substring(0, 500) + "...";
+        }
+
         internal void SwitchToThirdParty(string url, string model, string key)
         {
             AssertConfig();
@@ -671,21 +877,40 @@ namespace CodexApiSwitcher
                 throw new InvalidOperationException("An API key is required for the first third-party switch.");
             }
 
+            AssertCodexStoppedAndDatabasesAvailable();
             List<string> lines = ReadConfig();
-            BackupConfig();
-            SynchronizeConversationProvider(ProviderId);
-            SetTopLevelValue(lines, "model_provider", ProviderId);
-            SetTopLevelValue(lines, "model", cleanModel);
-            RemoveProviderSections(lines);
-            AddProviderSections(lines, cleanUrl);
-            WriteConfigAtomically(lines);
+            string currentProvider = GetTopLevelValue(lines, "model_provider");
+            string currentModel = GetTopLevelValue(lines, "model");
+            SwitchTransaction transaction = SwitchTransaction.Begin(root, configPath, GetStateDatabasePaths(), currentProvider, ProviderId);
+            try
+            {
+                BackupConfig();
+                EnsureCredentialHelperInstalled();
+                SynchronizeConversationProvider(ProviderId);
+                SetTopLevelValue(lines, "model_provider", ProviderId);
+                SetTopLevelValue(lines, "model", cleanModel);
+                RemoveProviderSections(lines);
+                AddProviderSections(lines, cleanUrl);
+                WriteConfigAtomically(lines);
+                transaction.Complete();
+            }
+            catch
+            {
+                transaction.Restore();
+                throw;
+            }
 
             StoredSettings settings = LoadSettings();
             settings.BaseUrl = cleanUrl;
             settings.ThirdPartyModel = cleanModel;
-            if (string.IsNullOrWhiteSpace(settings.OfficialModel))
+            if (string.Equals(currentProvider, "openai", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(currentModel))
             {
-                settings.OfficialModel = "gpt-5.5";
+                settings.OfficialModel = currentModel;
+            }
+            else if (string.IsNullOrWhiteSpace(settings.OfficialModel))
+            {
+                settings.OfficialModel = currentModel;
             }
             SaveSettings(settings);
         }
@@ -736,18 +961,29 @@ namespace CodexApiSwitcher
         internal void SwitchToOfficial(string model)
         {
             AssertConfig();
-            string cleanModel = (model ?? string.Empty).Trim();
+            string cleanModel = ResolveOfficialModel(model);
             if (cleanModel.Length == 0)
             {
                 throw new InvalidOperationException("Official model is required.");
             }
 
+            AssertCodexStoppedAndDatabasesAvailable();
             List<string> lines = ReadConfig();
-            BackupConfig();
-            SynchronizeConversationProvider("openai");
-            SetTopLevelValue(lines, "model_provider", "openai");
-            SetTopLevelValue(lines, "model", cleanModel);
-            WriteConfigAtomically(lines);
+            SwitchTransaction transaction = SwitchTransaction.Begin(root, configPath, GetStateDatabasePaths(), GetTopLevelValue(lines, "model_provider"), "openai");
+            try
+            {
+                BackupConfig();
+                SynchronizeConversationProvider("openai");
+                SetTopLevelValue(lines, "model_provider", "openai");
+                SetTopLevelValue(lines, "model", cleanModel);
+                WriteConfigAtomically(lines);
+                transaction.Complete();
+            }
+            catch
+            {
+                transaction.Restore();
+                throw;
+            }
 
             StoredSettings settings = LoadSettings();
             settings.OfficialModel = cleanModel;
@@ -757,11 +993,7 @@ namespace CodexApiSwitcher
         internal void ResetModelConfiguration(string model)
         {
             AssertConfig();
-            string cleanModel = (model ?? string.Empty).Trim();
-            if (cleanModel.Length == 0)
-            {
-                cleanModel = "gpt-5.5";
-            }
+            string cleanModel = ResolveOfficialModel(model);
 
             List<string> lines = ReadConfig();
             BackupConfig();
@@ -778,6 +1010,13 @@ namespace CodexApiSwitcher
         internal void Rollback()
         {
             AssertConfig();
+            AssertCodexStoppedAndDatabasesAvailable();
+            SwitchTransaction latestTransaction = SwitchTransaction.FindLatestCompleted(transactionDirectory);
+            if (latestTransaction != null)
+            {
+                latestTransaction.Restore();
+                return;
+            }
             if (!Directory.Exists(backupDirectory))
             {
                 throw new InvalidOperationException("No backup directory exists.");
@@ -794,6 +1033,62 @@ namespace CodexApiSwitcher
 
             BackupConfig();
             File.Copy(latest.FullName, configPath, true);
+        }
+
+        private string ResolveOfficialModel(string requested)
+        {
+            string clean = (requested ?? string.Empty).Trim();
+            if (clean.Length > 0) return clean;
+            StoredSettings settings = LoadSettings();
+            if (!string.IsNullOrWhiteSpace(settings.OfficialModel)) return settings.OfficialModel.Trim();
+            List<string> lines = ReadConfig();
+            if (string.Equals(GetTopLevelValue(lines, "model_provider"), "openai", StringComparison.OrdinalIgnoreCase))
+            {
+                clean = GetTopLevelValue(lines, "model").Trim();
+            }
+            if (clean.Length == 0)
+            {
+                throw new InvalidOperationException("Official model is unknown. Enter the model name once; it will be remembered for later switches.");
+            }
+            return clean;
+        }
+
+        private void EnsureCredentialHelperInstalled()
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(helperPath));
+            string sourceHash = Convert.ToBase64String(SHA256.Create().ComputeHash(File.ReadAllBytes(executablePath)));
+            string targetHash = File.Exists(helperPath)
+                ? Convert.ToBase64String(SHA256.Create().ComputeHash(File.ReadAllBytes(helperPath)))
+                : string.Empty;
+            if (!string.Equals(sourceHash, targetHash, StringComparison.Ordinal))
+            {
+                string temporary = helperPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                File.Copy(executablePath, temporary, true);
+                File.Copy(temporary, helperPath, true);
+                File.Delete(temporary);
+            }
+        }
+
+        private void AssertCodexStoppedAndDatabasesAvailable()
+        {
+            if (IsRealCodexRoot() && Process.GetProcesses().Any(process =>
+                process.Id != Process.GetCurrentProcess().Id &&
+                (string.Equals(process.ProcessName, "Codex", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(process.ProcessName, "codex-cli", StringComparison.OrdinalIgnoreCase))))
+            {
+                throw new InvalidOperationException("Codex is still running. Exit Codex completely before changing configuration or history.");
+            }
+            foreach (string path in GetStateDatabasePaths())
+            {
+                try
+                {
+                    using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read)) { }
+                }
+                catch (IOException)
+                {
+                    throw new InvalidOperationException("Codex state database is locked: " + path);
+                }
+            }
         }
 
         private void SaveToken(string token)
@@ -814,14 +1109,13 @@ namespace CodexApiSwitcher
         private bool IsRealCodexRoot()
         {
             string configured = Environment.GetEnvironmentVariable("CODEX_HOME");
-            if (!string.IsNullOrWhiteSpace(configured))
-            {
-                return string.Equals(
-                    Path.GetFullPath(configured).TrimEnd('\\'),
-                    root.TrimEnd('\\'),
-                    StringComparison.OrdinalIgnoreCase);
-            }
-            return false;
+            string expected = !string.IsNullOrWhiteSpace(configured)
+                ? configured
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+            return string.Equals(
+                Path.GetFullPath(expected).TrimEnd('\\'),
+                root.TrimEnd('\\'),
+                StringComparison.OrdinalIgnoreCase);
         }
 
         private static string NormalizeBaseUrl(string value)
@@ -831,6 +1125,11 @@ namespace CodexApiSwitcher
             if (!Uri.TryCreate(clean, UriKind.Absolute, out uri))
             {
                 throw new InvalidOperationException("Base URL is not a valid absolute URL.");
+            }
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+                !(string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) && uri.IsLoopback))
+            {
+                throw new InvalidOperationException("Remote API URLs must use HTTPS. HTTP is allowed only for localhost/loopback services such as a local CPA instance.");
             }
 
             string path = uri.AbsolutePath.TrimEnd('/');
@@ -871,11 +1170,7 @@ namespace CodexApiSwitcher
                 return "No state database exists yet; history synchronization was skipped.";
             }
 
-            if (IsRealCodexRoot() && Process.GetProcessesByName("Codex").Length > 0)
-            {
-                throw new InvalidOperationException(
-                    "Codex 仍在运行。为避免历史数据库冲突，请彻底退出 Codex 后再切换。");
-            }
+            AssertCodexStoppedAndDatabasesAvailable();
 
             if (targetProvider != "openai" && targetProvider != ProviderId)
             {
@@ -1185,7 +1480,9 @@ namespace CodexApiSwitcher
         private List<string> ReadConfig()
         {
             AssertConfig();
-            return new List<string>(File.ReadAllLines(configPath, Encoding.UTF8));
+            List<string> lines = new List<string>(File.ReadAllLines(configPath, Encoding.UTF8));
+            TomlConfigurationDocument.Parse(lines);
+            return lines;
         }
 
         private void AssertConfig()
@@ -1211,6 +1508,7 @@ namespace CodexApiSwitcher
 
         private void WriteConfigAtomically(List<string> lines)
         {
+            TomlConfigurationDocument.Parse(lines);
             string temporary = Path.Combine(root, "config.toml.switcher." + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
@@ -1283,48 +1581,12 @@ namespace CodexApiSwitcher
 
         private static string GetTopLevelValue(List<string> lines, string key)
         {
-            Regex expression = new Regex(
-                @"^\s*" + Regex.Escape(key) + @"\s*=\s*""([^""]*)""\s*$",
-                RegexOptions.CultureInvariant);
-            foreach (string line in lines)
-            {
-                if (Regex.IsMatch(line, @"^\s*\["))
-                {
-                    break;
-                }
-                Match match = expression.Match(line);
-                if (match.Success)
-                {
-                    return match.Groups[1].Value;
-                }
-            }
-            return string.Empty;
+            return TomlConfigurationDocument.Parse(lines).GetString(string.Empty, key);
         }
 
         private static string GetSectionValue(List<string> lines, string section, string key)
         {
-            bool inside = false;
-            Regex keyExpression = new Regex(
-                @"^\s*" + Regex.Escape(key) + @"\s*=\s*(.+?)\s*$",
-                RegexOptions.CultureInvariant);
-            foreach (string line in lines)
-            {
-                Match sectionMatch = Regex.Match(line, @"^\s*\[([^\]]+)\]\s*$");
-                if (sectionMatch.Success)
-                {
-                    inside = string.Equals(sectionMatch.Groups[1].Value, section, StringComparison.Ordinal);
-                    continue;
-                }
-                if (inside)
-                {
-                    Match keyMatch = keyExpression.Match(line);
-                    if (keyMatch.Success)
-                    {
-                        return keyMatch.Groups[1].Value.Trim().Trim('"');
-                    }
-                }
-            }
-            return string.Empty;
+            return TomlConfigurationDocument.Parse(lines).GetString(section, key);
         }
 
         private static bool SectionExists(List<string> lines, string section)
@@ -1406,7 +1668,7 @@ namespace CodexApiSwitcher
 
         private void AddProviderSections(List<string> lines, string url)
         {
-            string escapedExe = EscapeToml(executablePath);
+            string escapedExe = EscapeToml(helperPath);
             string escapedRoot = EscapeToml(root);
             lines.Add(string.Empty);
             lines.Add("[model_providers." + ProviderId + "]");
@@ -1420,6 +1682,323 @@ namespace CodexApiSwitcher
             lines.Add("timeout_ms = 5000");
             lines.Add("refresh_interval_ms = 0");
         }
+    }
+
+    internal sealed class TomlConfigurationDocument
+    {
+        private readonly Dictionary<string, string> values = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        internal static TomlConfigurationDocument Parse(List<string> lines)
+        {
+            TomlConfigurationDocument document = new TomlConfigurationDocument();
+            string section = string.Empty;
+            int continuationDepth = 0;
+            bool multilineBasic = false;
+            bool multilineLiteral = false;
+            for (int index = 0; index < lines.Count; index++)
+            {
+                string clean = StripComment(lines[index]).Trim();
+                if (clean.Length == 0) continue;
+                if (multilineBasic || multilineLiteral)
+                {
+                    if (multilineBasic && CountToken(clean, "\"\"\"") % 2 == 1) multilineBasic = false;
+                    if (multilineLiteral && CountToken(clean, "'''") % 2 == 1) multilineLiteral = false;
+                    continue;
+                }
+                if (continuationDepth > 0)
+                {
+                    continuationDepth += StructuralDelta(clean);
+                    if (continuationDepth < 0) throw Error(index, "unbalanced array or inline table");
+                    continue;
+                }
+                Match table = Regex.Match(clean, @"^\[\[?\s*([^\]]+?)\s*\]\]?$", RegexOptions.CultureInvariant);
+                if (table.Success)
+                {
+                    section = table.Groups[1].Value.Trim();
+                    if (section.Length == 0) throw Error(index, "empty table name");
+                    continue;
+                }
+                int equals = FindUnquoted(clean, '=');
+                if (equals <= 0) throw Error(index, "expected key = value");
+                string key = clean.Substring(0, equals).Trim();
+                string value = clean.Substring(equals + 1).Trim();
+                if (key.Length == 0 || value.Length == 0) throw Error(index, "empty key or value");
+                string composite = section + "\n" + key;
+                if (document.values.ContainsKey(composite)) throw Error(index, "duplicate key " + key);
+                document.values[composite] = value;
+                if (CountToken(value, "\"\"\"") % 2 == 1) multilineBasic = true;
+                else if (CountToken(value, "'''") % 2 == 1) multilineLiteral = true;
+                else
+                {
+                    continuationDepth = StructuralDelta(value);
+                    if (continuationDepth < 0) throw Error(index, "unbalanced array or inline table");
+                }
+            }
+            if (continuationDepth != 0 || multilineBasic || multilineLiteral)
+            {
+                throw new InvalidOperationException("Invalid TOML: unterminated multiline value.");
+            }
+            return document;
+        }
+
+        internal string GetString(string section, string key)
+        {
+            string value;
+            if (!values.TryGetValue((section ?? string.Empty) + "\n" + key, out value)) return string.Empty;
+            value = value.Trim();
+            if (value.Length >= 2 && ((value[0] == '"' && value[value.Length - 1] == '"') || (value[0] == '\'' && value[value.Length - 1] == '\'')))
+            {
+                value = value.Substring(1, value.Length - 2);
+            }
+            return value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+
+        private static InvalidOperationException Error(int index, string message)
+        {
+            return new InvalidOperationException("Invalid TOML at line " + (index + 1) + ": " + message + ".");
+        }
+        private static int CountToken(string value, string token)
+        {
+            int count = 0;
+            for (int at = 0; (at = value.IndexOf(token, at, StringComparison.Ordinal)) >= 0; at += token.Length) count++;
+            return count;
+        }
+        private static int StructuralDelta(string value)
+        {
+            int result = 0;
+            bool basic = false;
+            bool literal = false;
+            bool escape = false;
+            foreach (char character in value)
+            {
+                if (basic)
+                {
+                    if (escape) { escape = false; continue; }
+                    if (character == '\\') { escape = true; continue; }
+                    if (character == '"') basic = false;
+                    continue;
+                }
+                if (literal) { if (character == '\'') literal = false; continue; }
+                if (character == '"') { basic = true; continue; }
+                if (character == '\'') { literal = true; continue; }
+                if (character == '[' || character == '{') result++;
+                if (character == ']' || character == '}') result--;
+            }
+            return result;
+        }
+        private static int FindUnquoted(string value, char target)
+        {
+            bool basic = false;
+            bool literal = false;
+            bool escape = false;
+            for (int index = 0; index < value.Length; index++)
+            {
+                char character = value[index];
+                if (basic)
+                {
+                    if (escape) { escape = false; continue; }
+                    if (character == '\\') { escape = true; continue; }
+                    if (character == '"') basic = false;
+                    continue;
+                }
+                if (literal) { if (character == '\'') literal = false; continue; }
+                if (character == '"') { basic = true; continue; }
+                if (character == '\'') { literal = true; continue; }
+                if (character == target) return index;
+            }
+            return -1;
+        }
+        private static string StripComment(string value)
+        {
+            int comment = FindUnquoted(value, '#');
+            return comment >= 0 ? value.Substring(0, comment) : value;
+        }
+    }
+
+    internal sealed class SwitchTransaction
+    {
+        private readonly string manifestPath;
+        private readonly SwitchTransactionManifest manifest;
+
+        private SwitchTransaction(string path, SwitchTransactionManifest value)
+        {
+            manifestPath = path;
+            manifest = value;
+        }
+
+        internal static SwitchTransaction Begin(string root, string configPath, List<string> databasePaths, string fromProvider, string toProvider)
+        {
+            string directory = Path.Combine(root, "api-switcher", "transactions", DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            SwitchTransactionManifest value = new SwitchTransactionManifest();
+            value.Status = "started";
+            value.CreatedUtc = DateTime.UtcNow.ToString("o");
+            value.FromProvider = fromProvider;
+            value.ToProvider = toProvider;
+            value.ConfigPath = configPath;
+            value.ConfigBackupPath = Path.Combine(directory, "config.toml.before");
+            File.Copy(configPath, value.ConfigBackupPath, false);
+
+            HashSet<string> rolloutPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string databasePath in databasePaths)
+            {
+                DatabaseTransactionSnapshot databaseSnapshot = new DatabaseTransactionSnapshot();
+                databaseSnapshot.Path = databasePath;
+                using (NativeSqlite database = NativeSqlite.Open(databasePath))
+                {
+                    databaseSnapshot.Threads = database.QueryThreadSnapshots(
+                        "select id, model_provider, has_user_event, rollout_path from threads " +
+                        "where first_user_message <> '' and source in ('vscode','cli')");
+                }
+                value.Databases.Add(databaseSnapshot);
+                foreach (ThreadTransactionSnapshot thread in databaseSnapshot.Threads)
+                {
+                    if (!string.IsNullOrWhiteSpace(thread.RolloutPath)) rolloutPaths.Add(RemoveExtendedPrefix(thread.RolloutPath));
+                }
+            }
+
+            foreach (string path in rolloutPaths)
+            {
+                string fullPath = Path.GetFullPath(path);
+                string rootPrefix = Path.GetFullPath(root).TrimEnd('\\') + "\\";
+                if (!fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath)) continue;
+                SessionTransactionSnapshot session = new SessionTransactionSnapshot();
+                session.Path = fullPath;
+                session.FirstLine = ReadFirstLine(fullPath);
+                value.Sessions.Add(session);
+            }
+
+            string manifestPath = Path.Combine(directory, "manifest.json");
+            SwitchTransaction transaction = new SwitchTransaction(manifestPath, value);
+            transaction.Save();
+            return transaction;
+        }
+
+        internal static SwitchTransaction FindLatestCompleted(string transactionRoot)
+        {
+            if (!Directory.Exists(transactionRoot)) return null;
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            foreach (string path in Directory.GetFiles(transactionRoot, "manifest.json", SearchOption.AllDirectories).OrderByDescending(File.GetLastWriteTimeUtc))
+            {
+                try
+                {
+                    SwitchTransactionManifest value = serializer.Deserialize<SwitchTransactionManifest>(File.ReadAllText(path, Encoding.UTF8));
+                    if (value != null && string.Equals(value.Status, "completed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new SwitchTransaction(path, value);
+                    }
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        internal void Complete()
+        {
+            manifest.Status = "completed";
+            Save();
+        }
+
+        internal void Restore()
+        {
+            foreach (DatabaseTransactionSnapshot databaseSnapshot in manifest.Databases)
+            {
+                if (!File.Exists(databaseSnapshot.Path)) continue;
+                using (NativeSqlite database = NativeSqlite.Open(databaseSnapshot.Path))
+                {
+                    database.Execute("begin immediate");
+                    try
+                    {
+                        foreach (ThreadTransactionSnapshot thread in databaseSnapshot.Threads)
+                        {
+                            database.Execute(
+                                "update threads set model_provider = '" + Sql(thread.ModelProvider) +
+                                "', has_user_event = " + thread.HasUserEvent +
+                                " where id = '" + Sql(thread.Id) + "'");
+                        }
+                        database.Execute("commit");
+                    }
+                    catch
+                    {
+                        try { database.Execute("rollback"); } catch { }
+                        throw;
+                    }
+                }
+            }
+            foreach (SessionTransactionSnapshot session in manifest.Sessions)
+            {
+                if (File.Exists(session.Path)) ReplaceFirstLine(session.Path, session.FirstLine);
+            }
+            if (File.Exists(manifest.ConfigBackupPath)) File.Copy(manifest.ConfigBackupPath, manifest.ConfigPath, true);
+            manifest.Status = "rolled_back";
+            manifest.RolledBackUtc = DateTime.UtcNow.ToString("o");
+            Save();
+        }
+
+        private void Save()
+        {
+            File.WriteAllText(manifestPath, new JavaScriptSerializer().Serialize(manifest), new UTF8Encoding(false));
+        }
+
+        private static string Sql(string value) { return (value ?? string.Empty).Replace("'", "''"); }
+        private static string RemoveExtendedPrefix(string path) { return path.StartsWith("\\\\?\\", StringComparison.Ordinal) ? path.Substring(4) : path; }
+        private static string ReadFirstLine(string path)
+        {
+            using (StreamReader reader = new StreamReader(path, Encoding.UTF8, true)) return reader.ReadLine() ?? string.Empty;
+        }
+        private static void ReplaceFirstLine(string path, string firstLine)
+        {
+            byte[] original = File.ReadAllBytes(path);
+            int newline = Array.IndexOf(original, (byte)'\n');
+            int remainder = newline >= 0 ? newline : original.Length;
+            byte[] prefix = Encoding.UTF8.GetBytes(firstLine);
+            byte[] updated = new byte[prefix.Length + original.Length - remainder];
+            Buffer.BlockCopy(prefix, 0, updated, 0, prefix.Length);
+            Buffer.BlockCopy(original, remainder, updated, prefix.Length, original.Length - remainder);
+            string temporary = path + "." + Guid.NewGuid().ToString("N") + ".rollback.tmp";
+            File.WriteAllBytes(temporary, updated);
+            File.Copy(temporary, path, true);
+            File.Delete(temporary);
+        }
+    }
+
+    internal sealed class SwitchTransactionManifest
+    {
+        public SwitchTransactionManifest()
+        {
+            Databases = new List<DatabaseTransactionSnapshot>();
+            Sessions = new List<SessionTransactionSnapshot>();
+        }
+        public string Status { get; set; }
+        public string CreatedUtc { get; set; }
+        public string RolledBackUtc { get; set; }
+        public string FromProvider { get; set; }
+        public string ToProvider { get; set; }
+        public string ConfigPath { get; set; }
+        public string ConfigBackupPath { get; set; }
+        public List<DatabaseTransactionSnapshot> Databases { get; set; }
+        public List<SessionTransactionSnapshot> Sessions { get; set; }
+    }
+
+    internal sealed class DatabaseTransactionSnapshot
+    {
+        public DatabaseTransactionSnapshot() { Threads = new List<ThreadTransactionSnapshot>(); }
+        public string Path { get; set; }
+        public List<ThreadTransactionSnapshot> Threads { get; set; }
+    }
+
+    internal sealed class ThreadTransactionSnapshot
+    {
+        public string Id { get; set; }
+        public string ModelProvider { get; set; }
+        public int HasUserEvent { get; set; }
+        public string RolloutPath { get; set; }
+    }
+
+    internal sealed class SessionTransactionSnapshot
+    {
+        public string Path { get; set; }
+        public string FirstLine { get; set; }
     }
 
     internal sealed class SessionMetadataChange
@@ -1639,6 +2218,40 @@ namespace CodexApiSwitcher
             {
                 sqlite3_finalize(statement);
             }
+        }
+
+        internal List<ThreadTransactionSnapshot> QueryThreadSnapshots(string sql)
+        {
+            IntPtr statement = Prepare(sql);
+            List<ThreadTransactionSnapshot> values = new List<ThreadTransactionSnapshot>();
+            try
+            {
+                while (true)
+                {
+                    int result = sqlite3_step(statement);
+                    if (result == SqliteDone) return values;
+                    if (result != SqliteRow)
+                    {
+                        throw new InvalidOperationException("SQLite query failed: " + GetError(handle, result));
+                    }
+                    ThreadTransactionSnapshot value = new ThreadTransactionSnapshot();
+                    value.Id = ColumnText(statement, 0);
+                    value.ModelProvider = ColumnText(statement, 1);
+                    value.HasUserEvent = sqlite3_column_int(statement, 2);
+                    value.RolloutPath = ColumnText(statement, 3);
+                    values.Add(value);
+                }
+            }
+            finally
+            {
+                sqlite3_finalize(statement);
+            }
+        }
+
+        private static string ColumnText(IntPtr statement, int index)
+        {
+            IntPtr value = sqlite3_column_text16(statement, index);
+            return value == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUni(value);
         }
 
         private IntPtr Prepare(string sql)
