@@ -463,7 +463,7 @@ namespace CodexApiSwitcher
             {
                 string result = GetService().TestProvider(urlBox.Text, thirdPartyModelBox.Text, keyBox.Text);
                 MessageBox.Show(result, "接口测试通过", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            });
+            }, false);
         }
 
         private void ListModels(object sender, EventArgs e)
@@ -494,7 +494,7 @@ namespace CodexApiSwitcher
                         thirdPartyModelBox.Text = Convert.ToString(list.SelectedItem);
                     }
                 }
-            });
+            }, false);
         }
 
         private void SwitchThirdParty(object sender, EventArgs e)
@@ -616,7 +616,7 @@ namespace CodexApiSwitcher
 
             DialogResult confirmed = MessageBox.Show(
                 "将先完整备份 config.toml，然后重建官方模型配置。\n\n" +
-                "会恢复 model_provider 和 model，移除损坏的 custom provider 段；MCP、插件、沙箱、记忆、会话和 auth.json 均保持不变。\n\n" +
+                "会恢复 model_provider 和 model，移除损坏的 custom provider 段，并把既有会话的 provider 元数据同步回 openai；会话正文、MCP、插件、沙箱、记忆和 auth.json 均保持不变。\n\n" +
                 "确定继续吗？",
                 "确认恢复基础配置",
                 MessageBoxButtons.YesNo,
@@ -639,11 +639,23 @@ namespace CodexApiSwitcher
 
         private void RunAction(Action action)
         {
+            RunAction(action, true);
+        }
+
+        private void RunAction(Action action, bool reloadSettings)
+        {
             try
             {
                 SetButtonsEnabled(false);
                 action();
-                LoadRootSettings();
+                if (reloadSettings)
+                {
+                    LoadRootSettings();
+                }
+                else
+                {
+                    SetButtonsEnabled(true);
+                }
             }
             catch (Exception ex)
             {
@@ -1007,13 +1019,29 @@ namespace CodexApiSwitcher
         {
             AssertConfig();
             string cleanModel = ResolveOfficialModel(model);
-
+            AssertCodexStoppedAndDatabasesAvailable();
             List<string> lines = ReadConfig();
-            BackupConfig();
-            SetTopLevelValue(lines, "model_provider", "openai");
-            SetTopLevelValue(lines, "model", cleanModel);
-            RemoveProviderSections(lines);
-            WriteConfigAtomically(lines);
+            SwitchTransaction transaction = SwitchTransaction.Begin(
+                root,
+                configPath,
+                GetStateDatabasePaths(),
+                GetTopLevelValue(lines, "model_provider"),
+                "openai");
+            try
+            {
+                BackupConfig();
+                SynchronizeConversationProvider("openai");
+                SetTopLevelValue(lines, "model_provider", "openai");
+                SetTopLevelValue(lines, "model", cleanModel);
+                RemoveProviderSections(lines);
+                WriteConfigAtomically(lines);
+                transaction.Complete();
+            }
+            catch
+            {
+                transaction.Restore();
+                throw;
+            }
 
             StoredSettings settings = LoadSettings();
             settings.OfficialModel = cleanModel;

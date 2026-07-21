@@ -15,6 +15,7 @@ CodexApiSwitcher.exe
    - 首次填写 API Key
    - 可先点击“读取模型”选择服务实际提供的模型
    - 点击“测试接口”检查 Responses、SSE、工具定义和 compact；测试会消耗少量额度
+   - 测试或读取模型后，尚未切换的 URL、模型和 Key 输入会继续保留
    - 点击“切换到第三方 API”
 4. 官方模式：
    - 填写官方模型名称
@@ -45,6 +46,7 @@ CodexApiSwitcher.exe
 - 工具会校验 TOML 结构、Codex 进程和 SQLite 文件锁；检测失败时不会写入。
 - 允许使用远程 HTTP API；界面会提示 API Key、代码和聊天内容可能被明文传输。
 - 切到第三方前会记住当前官方模型，切回时无需依赖硬编码的默认模型。
-- “一键恢复基础配置”只重建 model/model_provider，并清理损坏的 custom provider 段。
+- “一键恢复基础配置”会重建 model/model_provider、清理损坏的 custom provider 段，
+  并把既有会话的 provider 元数据同步回 openai；不会修改会话正文。
 - 如果侧栏显示“暂无对话”，请先彻底退出 Codex，再点击“修复会话列表”。
   该操作会先自动识别并备份新旧状态数据库，然后只恢复顶层用户会话的可见标记。

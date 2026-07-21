@@ -73,6 +73,11 @@ if ((Get-Content -LiteralPath $userRollout -Encoding UTF8)[1] -ne $bodyLine) { t
 $token = & $exe --emit-token --root $root
 if ($LASTEXITCODE -ne 0) { throw "Credential helper failed with exit code $LASTEXITCODE." }
 if ($token -ne "test-token-not-a-real-key") { throw "Credential helper returned the wrong token." }
+$installedHelper = Join-Path $root "api-switcher\bin\CodexApiCredentialHelper.exe"
+if (-not (Test-Path -LiteralPath $installedHelper)) { throw "Stable credential helper was not installed." }
+$installedToken = & $installedHelper --emit-token --root $root
+if ($LASTEXITCODE -ne 0) { throw "Installed credential helper failed with exit code $LASTEXITCODE." }
+if ($installedToken -ne "test-token-not-a-real-key") { throw "Installed credential helper returned the wrong token." }
 
 try {
     $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -114,6 +119,9 @@ if (-not (Test-Path -LiteralPath $newRollout)) { throw "Rollback deleted a post-
 & $exe --switch-official --root $root --model "official-test-model"
 if ($LASTEXITCODE -ne 0) { throw "Official switch after rollback failed with exit code $LASTEXITCODE." }
 
+& $exe --switch-third-party --root $root --url "http://api.example.test" --model "test-model" --key "test-token-not-a-real-key"
+if ($LASTEXITCODE -ne 0) { throw "Third-party setup before reset failed with exit code $LASTEXITCODE." }
+
 $brokenFixture = @'
 model = "broken-model"
 disable_response_storage = true
@@ -139,6 +147,10 @@ if ($reset -notmatch '(?m)^model = "reset-official-model"\r?$') { throw "Reset d
 if ($reset -match '(?m)^\[model_providers\.custom\]\r?$') { throw "Reset did not remove the broken custom provider section." }
 if ($reset -notmatch '(?m)^\[mcp_servers\.example\]\r?$') { throw "Reset removed MCP configuration." }
 if ($reset -notmatch '(?m)^disable_response_storage = true\r?$') { throw "Reset removed unrelated top-level configuration." }
+$resetProviders = python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
+if ($resetProviders -ne "openai,openai,openai,openai") { throw "Reset left conversation rows assigned to a removed custom provider: $resetProviders" }
+$resetUserMeta = (Get-Content -LiteralPath $userRollout -Encoding UTF8 -TotalCount 1 | ConvertFrom-Json).payload.model_provider
+if ($resetUserMeta -ne "openai") { throw "Reset left JSONL metadata assigned to a removed custom provider." }
 
 $backups = Get-ChildItem -LiteralPath (Join-Path $root "config-switcher-backups") -File -Filter "config.toml.*.bak"
 if ($backups.Count -lt 3) { throw "Expected automatic backups." }
@@ -168,4 +180,4 @@ if ($counts -ne "3,3,0") { throw "Sidebar repair changed the wrong thread rows: 
 $activeCounts = python (Join-Path $PSScriptRoot "check-sidebar-fixture.py") $activeStatePath
 if ($activeCounts -ne "3,3,0") { throw "Sidebar repair did not update the active SQLite database: $activeCounts" }
 
-Write-Output "PASS: Root and active SQLite synchronization, incremental rollback preserving post-switch sessions, JSONL provider synchronization, unchanged conversation content, Python-free switching, model configuration reset, URL normalization, DPAPI storage, backups, TOML parsing, sidebar repair, and config preservation."
+Write-Output "PASS: Root and active SQLite synchronization, incremental rollback preserving post-switch sessions, reset cleanup of stale custom-provider metadata, JSONL provider synchronization, unchanged conversation content, stable credential helper execution, Python-free switching, model configuration reset, URL normalization, DPAPI storage, backups, TOML parsing, sidebar repair, and config preservation."
