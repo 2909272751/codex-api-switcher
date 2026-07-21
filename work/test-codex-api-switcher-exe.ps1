@@ -5,6 +5,10 @@ $exe = Join-Path $workspace "outputs\CodexApiSwitcher.exe"
 $root = Join-Path $PSScriptRoot ("exe-test-root-" + [guid]::NewGuid().ToString("N"))
 $config = Join-Path $root "config.toml"
 
+if ((Get-Item -LiteralPath $exe).VersionInfo.FileVersion -ne "2.1.0.0") {
+    throw "The executable version is not 2.1.0.0."
+}
+
 New-Item -ItemType Directory -Path $root | Out-Null
 
 $fixture = @'
@@ -116,6 +120,78 @@ $rollbackProviders = python -c "import sqlite3; c=sqlite3.connect(r'$statePath')
 if ($rollbackProviders -ne "openai,custom,openai,custom") { throw "Rollback removed or rewrote the post-switch session: $rollbackProviders" }
 if (-not (Test-Path -LiteralPath $newRollout)) { throw "Rollback deleted a post-switch session file." }
 
+& $exe --switch-sub2api --root $root --url "http://127.0.0.1:18080" --model "sub2-test-model" --key "sub2-test-token-not-a-real-key"
+if ($LASTEXITCODE -ne 0) { throw "Sub2API switch failed with exit code $LASTEXITCODE." }
+
+$sub2 = Get-Content -LiteralPath $config -Raw -Encoding UTF8
+if ($sub2 -notmatch '(?m)^model_provider = "sub2api"\r?$') { throw "Sub2API provider missing." }
+if ($sub2 -notmatch '(?m)^model = "sub2-test-model"\r?$') { throw "Sub2API model missing." }
+if ($sub2 -notmatch '(?m)^base_url = "http://127\.0\.0\.1:18080/v1"\r?$') { throw "Sub2API Base URL was not normalized to /v1." }
+if ($sub2 -notmatch '(?m)^supports_websockets = false\r?$') { throw "Sub2API WebSocket transport was not disabled." }
+if ($sub2 -notmatch '(?m)^\[model_providers\.sub2api\.auth\]\r?$') { throw "Sub2API credential helper missing." }
+if ($sub2 -notmatch '"--profile", "sub2api"') { throw "Sub2API credential helper uses the wrong key profile." }
+if ($sub2 -match '(?m)^\[model_providers\.custom\]\r?$') { throw "Stale custom provider section remained after Sub2API switch." }
+if ($sub2 -match 'sub2-test-token-not-a-real-key') { throw "Plaintext Sub2API key leaked into config." }
+
+$storedDrafts = @{}
+foreach ($line in Get-Content -LiteralPath (Join-Path $root "api-switcher\settings.dat") -Encoding UTF8) {
+    $separator = $line.IndexOf('=')
+    if ($separator -gt 0) {
+        $storedDrafts[$line.Substring(0, $separator)] = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line.Substring($separator + 1)))
+    }
+}
+if ($storedDrafts.url -ne "http://api.example.test/v1" -or $storedDrafts.thirdModel -ne "test-model") {
+    throw "Sub2API switch overwrote the generic third-party draft."
+}
+if ($storedDrafts.sub2Url -ne "http://127.0.0.1:18080/v1" -or $storedDrafts.sub2Model -ne "sub2-test-model") {
+    throw "Sub2API draft was not saved independently."
+}
+
+$sub2Token = & $exe --emit-token --root $root --profile sub2api
+if ($LASTEXITCODE -ne 0 -or $sub2Token -ne "sub2-test-token-not-a-real-key") { throw "Sub2API credential profile returned the wrong token." }
+$preservedCustomToken = & $exe --emit-token --root $root --profile custom
+if ($LASTEXITCODE -ne 0 -or $preservedCustomToken -ne "test-token-not-a-real-key") { throw "Sub2API switch overwrote the generic third-party token." }
+$installedSub2Token = & $installedHelper --emit-token --root $root --profile sub2api
+if ($LASTEXITCODE -ne 0 -or $installedSub2Token -ne "sub2-test-token-not-a-real-key") { throw "Installed helper could not read the Sub2API token." }
+
+$mockPortFile = Join-Path $root "mock-sub2api-port.txt"
+$mockServer = Start-Process -FilePath "python" -ArgumentList @((Join-Path $PSScriptRoot "mock-sub2api-server.py"), $mockPortFile) -PassThru -WindowStyle Hidden
+try {
+    for ($attempt = 0; $attempt -lt 50 -and -not (Test-Path -LiteralPath $mockPortFile); $attempt++) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not (Test-Path -LiteralPath $mockPortFile)) { throw "The mock Sub2API server did not start." }
+    $mockPort = (Get-Content -LiteralPath $mockPortFile -Raw -Encoding ASCII).Trim()
+    $mockUrl = "http://127.0.0.1:$mockPort"
+    $sub2Probe = & $exe --test-provider --root $root --profile sub2api --url $mockUrl --model "sub2-test-model"
+    if ($LASTEXITCODE -ne 0 -or $sub2Probe -notmatch "PASS:") { throw "Sub2API Responses/SSE/compact preflight failed." }
+    $sub2Models = & $exe --list-models --root $root --profile sub2api --url $mockUrl
+    if ($LASTEXITCODE -ne 0 -or ($sub2Models | Select-String "sub2-test-model").Count -ne 1) { throw "Sub2API model discovery failed." }
+} finally {
+    if ($mockServer -and -not $mockServer.HasExited) { Stop-Process -Id $mockServer.Id -Force }
+}
+
+$sub2Providers = python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
+if ($sub2Providers -ne "openai,sub2api,sub2api,sub2api") { throw "Sub2API history synchronization failed: $sub2Providers" }
+$activeSub2Providers = python -c "import sqlite3; c=sqlite3.connect(r'$activeStatePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
+if ($activeSub2Providers -ne "openai,sub2api,sub2api,sub2api") { throw "Active SQLite Sub2API synchronization failed: $activeSub2Providers" }
+$sub2UserMeta = (Get-Content -LiteralPath $userRollout -Encoding UTF8 -TotalCount 1 | ConvertFrom-Json).payload.model_provider
+$sub2CliMeta = (Get-Content -LiteralPath $cliRollout -Encoding UTF8 -TotalCount 1 | ConvertFrom-Json).payload.model_provider
+$sub2NewMeta = (Get-Content -LiteralPath $newRollout -Encoding UTF8 -TotalCount 1 | ConvertFrom-Json).payload.model_provider
+if ($sub2UserMeta -ne "sub2api" -or $sub2CliMeta -ne "sub2api" -or $sub2NewMeta -ne "sub2api") { throw "Sub2API JSONL metadata synchronization failed." }
+if ((Get-Content -LiteralPath $userRollout -Encoding UTF8)[1] -ne $bodyLine) { throw "Sub2API synchronization changed conversation content." }
+
+if (-not [string]::IsNullOrWhiteSpace($env:CODEX_TEST_BINARY) -and (Test-Path -LiteralPath $env:CODEX_TEST_BINARY)) {
+    $previousCodexHome = $env:CODEX_HOME
+    try {
+        $env:CODEX_HOME = $root
+        & $env:CODEX_TEST_BINARY features list *> $null
+        if ($LASTEXITCODE -ne 0) { throw "The installed Codex CLI rejected the generated Sub2API config." }
+    } finally {
+        $env:CODEX_HOME = $previousCodexHome
+    }
+}
+
 & $exe --switch-official --root $root --model "official-test-model"
 if ($LASTEXITCODE -ne 0) { throw "Official switch after rollback failed with exit code $LASTEXITCODE." }
 
@@ -135,6 +211,10 @@ command = "example.exe"
 [model_providers.custom]
 name = "broken"
 wire_api = "responses"
+
+[model_providers.sub2api]
+name = "also-broken"
+wire_api = "responses"
 '@
 [System.IO.File]::WriteAllText($config, $brokenFixture, [System.Text.UTF8Encoding]::new($false))
 
@@ -145,6 +225,7 @@ $reset = Get-Content -LiteralPath $config -Raw -Encoding UTF8
 if ($reset -notmatch '(?m)^model_provider = "openai"\r?$') { throw "Reset did not restore model_provider." }
 if ($reset -notmatch '(?m)^model = "reset-official-model"\r?$') { throw "Reset did not restore the official model." }
 if ($reset -match '(?m)^\[model_providers\.custom\]\r?$') { throw "Reset did not remove the broken custom provider section." }
+if ($reset -match '(?m)^\[model_providers\.sub2api\]\r?$') { throw "Reset did not remove the broken Sub2API provider section." }
 if ($reset -notmatch '(?m)^\[mcp_servers\.example\]\r?$') { throw "Reset removed MCP configuration." }
 if ($reset -notmatch '(?m)^disable_response_storage = true\r?$') { throw "Reset removed unrelated top-level configuration." }
 $resetProviders = python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); print(','.join(r[0] for r in c.execute('select model_provider from threads order by id')))"
@@ -159,7 +240,7 @@ if ($historyBackups.Count -lt 4) { throw "Expected automatic backups for both hi
 $sessionBackups = Get-ChildItem -LiteralPath (Join-Path $root "history_sync_backups") -Recurse -File -Filter "*rollout-*.jsonl"
 if ($sessionBackups.Count -lt 4) { throw "Expected automatic JSONL metadata backups." }
 
-python -c "import tomllib; d=tomllib.load(open(r'$config','rb')); assert d['model_provider']=='openai'; assert d['model']=='reset-official-model'; assert d['mcp_servers']['example']['command']=='example.exe'; assert 'custom' not in d.get('model_providers',{})"
+python -c "import tomllib; d=tomllib.load(open(r'$config','rb')); assert d['model_provider']=='openai'; assert d['model']=='reset-official-model'; assert d['mcp_servers']['example']['command']=='example.exe'; assert 'custom' not in d.get('model_providers',{}); assert 'sub2api' not in d.get('model_providers',{})"
 if ($LASTEXITCODE -ne 0) { throw "Generated TOML is invalid." }
 
 python -c "import sqlite3; c=sqlite3.connect(r'$statePath'); c.execute('update threads set has_user_event=0'); c.commit(); c.close()"
@@ -180,4 +261,4 @@ if ($counts -ne "3,3,0") { throw "Sidebar repair changed the wrong thread rows: 
 $activeCounts = python (Join-Path $PSScriptRoot "check-sidebar-fixture.py") $activeStatePath
 if ($activeCounts -ne "3,3,0") { throw "Sidebar repair did not update the active SQLite database: $activeCounts" }
 
-Write-Output "PASS: Root and active SQLite synchronization, incremental rollback preserving post-switch sessions, reset cleanup of stale custom-provider metadata, JSONL provider synchronization, unchanged conversation content, stable credential helper execution, Python-free switching, model configuration reset, URL normalization, DPAPI storage, backups, TOML parsing, sidebar repair, and config preservation."
+Write-Output "PASS: Official, generic, and Sub2API switching; separate DPAPI credentials; Sub2API models/Responses/SSE/compact preflight; WebSocket disablement; real Codex config parsing when available; root and active SQLite synchronization; incremental rollback; provider cleanup; unchanged conversation content; stable credential helper execution; model reset; URL normalization; backups; TOML parsing; sidebar repair; and config preservation."

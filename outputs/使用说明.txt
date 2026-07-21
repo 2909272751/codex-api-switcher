@@ -20,8 +20,16 @@ CodexApiSwitcher.exe
 4. 官方模式：
    - 填写官方模型名称
    - 点击“切换到官方登录”
-5. 切换前请彻底退出 Codex。切换完成后重新打开 Codex。
-6. 如果误删 model_provider、model 或损坏第三方 provider 配置：
+5. Sub2API 快捷模式：
+   - 先在 Sub2API 后台添加 OpenAI 上游账号并创建用户 Key
+   - Base URL 本机默认填写 http://127.0.0.1:8080/v1
+   - 填写 Sub2API 实际提供的模型和 Sub2API 用户 Key
+   - 可点击“测试 Sub2API”检查 Responses/SSE/compact
+   - 可点击“读取模型”选择服务返回的模型
+   - 点击“一键切换 Sub2API”
+   - 工具会自动写入独立 sub2api provider，并设置 supports_websockets = false
+6. 切换前请彻底退出 Codex。切换完成后重新打开 Codex。
+7. 如果误删 model_provider、model 或损坏第三方 provider 配置：
    - 点击“一键恢复基础配置”
    - 工具会备份当前 config.toml
    - 恢复为官方 OpenAI 登录配置
@@ -31,6 +39,11 @@ CodexApiSwitcher.exe
 - 程序为单 EXE，不需要安装 Python、SQLite 或其他运行库。
 - SQLite 操作使用 Windows 10/11 自带的 winsqlite3.dll。
 - API Key 使用 Windows DPAPI 加密，只能由当前 Windows 用户解密。
+- 普通第三方 Key 与 Sub2API Key 分开加密保存，切换时不会互相覆盖。
+- Sub2API 使用 DPAPI 凭据助手，不需要手工设置 OPENAI_API_KEY 环境变量。
+- Sub2API 配置固定关闭 Responses WebSocket，走普通 HTTP /v1/responses，避免 WebSocket 401。
+- 如果 Sub2API 在 Docker 中，上游代理应使用 host.docker.internal，不能使用容器自己的 127.0.0.1。
+- Sub2API 返回 Service temporarily unavailable 时，检查上游账号、代理、用户余额、平台权限和分组。
 - 每次切换前都会备份 config.toml，以及检测到的新旧状态数据库。
 - 每次切换还会创建事务清单，记录旧会话的 provider、可见标记及 JSONL 元数据。
 - 每次切换都会同步根目录旧库、sqlite 子目录活动库和会话 JSONL 第一行的 model_provider，
@@ -46,7 +59,7 @@ CodexApiSwitcher.exe
 - 工具会校验 TOML 结构、Codex 进程和 SQLite 文件锁；检测失败时不会写入。
 - 允许使用远程 HTTP API；界面会提示 API Key、代码和聊天内容可能被明文传输。
 - 切到第三方前会记住当前官方模型，切回时无需依赖硬编码的默认模型。
-- “一键恢复基础配置”会重建 model/model_provider、清理损坏的 custom provider 段，
+- “一键恢复基础配置”会重建 model/model_provider、清理损坏的 custom/sub2api provider 段，
   并把既有会话的 provider 元数据同步回 openai；不会修改会话正文。
 - 如果侧栏显示“暂无对话”，请先彻底退出 Codex，再点击“修复会话列表”。
   该操作会先自动识别并备份新旧状态数据库，然后只恢复顶层用户会话的可见标记。

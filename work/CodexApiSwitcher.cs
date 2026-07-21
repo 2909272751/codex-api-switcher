@@ -9,11 +9,17 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+
+[assembly: AssemblyTitle("Codex API Switcher")]
+[assembly: AssemblyProduct("Codex API Switcher")]
+[assembly: AssemblyVersion("2.1.0.0")]
+[assembly: AssemblyFileVersion("2.1.0.0")]
 
 namespace CodexApiSwitcher
 {
@@ -66,7 +72,7 @@ namespace CodexApiSwitcher
 
             if (options.ContainsKey("--emit-token"))
             {
-                Console.Out.Write(service.ReadToken());
+                Console.Out.Write(service.ReadToken(GetOption(options, "--profile", SwitcherService.CustomProviderId)));
                 return 0;
             }
 
@@ -83,6 +89,16 @@ namespace CodexApiSwitcher
                 string key = RequireOption(options, "--key");
                 service.SwitchToThirdParty(url, model, key);
                 Console.WriteLine("Switched to third-party Responses API.");
+                return 0;
+            }
+
+            if (options.ContainsKey("--switch-sub2api"))
+            {
+                string url = RequireOption(options, "--url");
+                string model = RequireOption(options, "--model");
+                string key = RequireOption(options, "--key");
+                service.SwitchToSub2Api(url, model, key);
+                Console.WriteLine("Switched to Sub2API Responses API.");
                 return 0;
             }
 
@@ -120,7 +136,8 @@ namespace CodexApiSwitcher
                 string url = RequireOption(options, "--url");
                 string model = RequireOption(options, "--model");
                 string key = GetOption(options, "--key", string.Empty);
-                Console.WriteLine(service.TestProvider(url, model, key));
+                string profile = GetOption(options, "--profile", SwitcherService.CustomProviderId);
+                Console.WriteLine(service.TestProvider(url, model, key, profile));
                 return 0;
             }
 
@@ -128,7 +145,8 @@ namespace CodexApiSwitcher
             {
                 string url = RequireOption(options, "--url");
                 string key = GetOption(options, "--key", string.Empty);
-                foreach (string model in service.ListModels(url, key)) Console.WriteLine(model);
+                string profile = GetOption(options, "--profile", SwitcherService.CustomProviderId);
+                foreach (string model in service.ListModels(url, key, profile)) Console.WriteLine(model);
                 return 0;
             }
 
@@ -187,25 +205,32 @@ namespace CodexApiSwitcher
         private readonly TextBox thirdPartyModelBox = new TextBox();
         private readonly TextBox officialModelBox = new TextBox();
         private readonly TextBox keyBox = new TextBox();
+        private readonly TextBox sub2ApiUrlBox = new TextBox();
+        private readonly TextBox sub2ApiModelBox = new TextBox();
+        private readonly TextBox sub2ApiKeyBox = new TextBox();
         private readonly Label statusLabel = new Label();
         private readonly Label keyStateLabel = new Label();
+        private readonly Label sub2ApiKeyStateLabel = new Label();
         private readonly Label backupLocationLabel = new Label();
         private readonly Label watermarkLabel = new Label();
         private readonly Button officialButton = new Button();
         private readonly Button thirdPartyButton = new Button();
+        private readonly Button sub2ApiButton = new Button();
         private readonly Button rollbackButton = new Button();
         private readonly Button repairButton = new Button();
         private readonly Button resetConfigButton = new Button();
         private readonly Button testProviderButton = new Button();
         private readonly Button listModelsButton = new Button();
+        private readonly Button testSub2ApiButton = new Button();
+        private readonly Button listSub2ApiModelsButton = new Button();
         private readonly CheckBox preflightCheckBox = new CheckBox();
 
         internal MainForm()
         {
             Text = "Codex API 切换器";
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(690, 640);
-            MinimumSize = new Size(706, 679);
+            ClientSize = new Size(690, 790);
+            MinimumSize = new Size(706, 829);
             Font = new Font("Microsoft YaHei UI", 9F);
             BackColor = Color.FromArgb(247, 248, 250);
 
@@ -288,8 +313,8 @@ namespace CodexApiSwitcher
 
             preflightCheckBox.Text = "切换前自动预检";
             preflightCheckBox.Checked = true;
-            preflightCheckBox.Location = new Point(160, 333);
-            preflightCheckBox.Size = new Size(150, 24);
+            preflightCheckBox.Location = new Point(30, 333);
+            preflightCheckBox.Size = new Size(125, 24);
             Controls.Add(preflightCheckBox);
 
             testProviderButton.Text = "测试接口";
@@ -304,18 +329,74 @@ namespace CodexApiSwitcher
             listModelsButton.Click += ListModels;
             Controls.Add(listModelsButton);
 
-            thirdPartyButton.Text = "切换到第三方 API";
-            thirdPartyButton.Location = new Point(30, 372);
-            thirdPartyButton.Size = new Size(195, 46);
+            Label sub2ApiTitle = new Label();
+            sub2ApiTitle.Text = "Sub2API 快捷模式（独立保存，不覆盖普通第三方配置）";
+            sub2ApiTitle.Font = new Font(Font.FontFamily, 10F, FontStyle.Bold);
+            sub2ApiTitle.Location = new Point(30, 375);
+            sub2ApiTitle.Size = new Size(630, 25);
+            Controls.Add(sub2ApiTitle);
+
+            AddLabel("Sub2API Base URL", 30, 410);
+            sub2ApiUrlBox.Location = new Point(160, 405);
+            sub2ApiUrlBox.Size = new Size(500, 27);
+            Controls.Add(sub2ApiUrlBox);
+
+            AddLabel("Sub2API 模型", 30, 450);
+            sub2ApiModelBox.Location = new Point(160, 445);
+            sub2ApiModelBox.Size = new Size(210, 27);
+            Controls.Add(sub2ApiModelBox);
+
+            testSub2ApiButton.Text = "测试 Sub2API";
+            testSub2ApiButton.Location = new Point(470, 442);
+            testSub2ApiButton.Size = new Size(90, 30);
+            testSub2ApiButton.Click += TestSub2Api;
+            Controls.Add(testSub2ApiButton);
+
+            listSub2ApiModelsButton.Text = "读取模型";
+            listSub2ApiModelsButton.Location = new Point(570, 442);
+            listSub2ApiModelsButton.Size = new Size(90, 30);
+            listSub2ApiModelsButton.Click += ListSub2ApiModels;
+            Controls.Add(listSub2ApiModelsButton);
+
+            AddLabel("Sub2API Key", 30, 490);
+            sub2ApiKeyBox.Location = new Point(160, 485);
+            sub2ApiKeyBox.Size = new Size(410, 27);
+            sub2ApiKeyBox.UseSystemPasswordChar = true;
+            Controls.Add(sub2ApiKeyBox);
+
+            CheckBox showSub2ApiKey = new CheckBox();
+            showSub2ApiKey.Text = "显示";
+            showSub2ApiKey.Location = new Point(580, 487);
+            showSub2ApiKey.Size = new Size(70, 24);
+            showSub2ApiKey.CheckedChanged += delegate { sub2ApiKeyBox.UseSystemPasswordChar = !showSub2ApiKey.Checked; };
+            Controls.Add(showSub2ApiKey);
+
+            sub2ApiKeyStateLabel.Location = new Point(160, 516);
+            sub2ApiKeyStateLabel.AutoSize = true;
+            sub2ApiKeyStateLabel.ForeColor = Color.DimGray;
+            Controls.Add(sub2ApiKeyStateLabel);
+
+            thirdPartyButton.Text = "切换第三方";
+            thirdPartyButton.Location = new Point(30, 545);
+            thirdPartyButton.Size = new Size(145, 46);
             thirdPartyButton.BackColor = Color.FromArgb(27, 99, 214);
             thirdPartyButton.ForeColor = Color.White;
             thirdPartyButton.FlatStyle = FlatStyle.Flat;
             thirdPartyButton.Click += SwitchThirdParty;
             Controls.Add(thirdPartyButton);
 
-            officialButton.Text = "切换到官方登录";
-            officialButton.Location = new Point(245, 372);
-            officialButton.Size = new Size(195, 46);
+            sub2ApiButton.Text = "一键切换 Sub2API";
+            sub2ApiButton.Location = new Point(190, 545);
+            sub2ApiButton.Size = new Size(145, 46);
+            sub2ApiButton.BackColor = Color.FromArgb(22, 125, 104);
+            sub2ApiButton.ForeColor = Color.White;
+            sub2ApiButton.FlatStyle = FlatStyle.Flat;
+            sub2ApiButton.Click += SwitchSub2Api;
+            Controls.Add(sub2ApiButton);
+
+            officialButton.Text = "切换官方";
+            officialButton.Location = new Point(350, 545);
+            officialButton.Size = new Size(145, 46);
             officialButton.BackColor = Color.FromArgb(35, 43, 54);
             officialButton.ForeColor = Color.White;
             officialButton.FlatStyle = FlatStyle.Flat;
@@ -323,45 +404,45 @@ namespace CodexApiSwitcher
             Controls.Add(officialButton);
 
             rollbackButton.Text = "恢复最近备份";
-            rollbackButton.Location = new Point(460, 372);
-            rollbackButton.Size = new Size(200, 46);
+            rollbackButton.Location = new Point(510, 545);
+            rollbackButton.Size = new Size(150, 46);
             rollbackButton.Click += Rollback;
             Controls.Add(rollbackButton);
 
             repairButton.Text = "修复会话列表";
-            repairButton.Location = new Point(30, 438);
+            repairButton.Location = new Point(30, 610);
             repairButton.Size = new Size(195, 42);
             repairButton.Click += RepairSidebar;
             Controls.Add(repairButton);
 
             resetConfigButton.Text = "一键恢复基础配置";
-            resetConfigButton.Location = new Point(245, 438);
+            resetConfigButton.Location = new Point(245, 610);
             resetConfigButton.Size = new Size(195, 42);
             resetConfigButton.Click += ResetConfig;
             Controls.Add(resetConfigButton);
 
             Label maintenanceNote = new Label();
             maintenanceNote.Text = "修复会话列表用于历史缺失；恢复基础配置用于 model/provider 配置损坏。";
-            maintenanceNote.Location = new Point(460, 438);
+            maintenanceNote.Location = new Point(460, 610);
             maintenanceNote.Size = new Size(200, 48);
             maintenanceNote.ForeColor = Color.FromArgb(120, 76, 20);
             Controls.Add(maintenanceNote);
 
             Label footer = new Label();
             footer.Text = "切换完成后，请彻底退出并重新打开 Codex。每次切换都会自动备份原配置。";
-            footer.Location = new Point(30, 510);
+            footer.Location = new Point(30, 672);
             footer.Size = new Size(630, 45);
             footer.ForeColor = Color.FromArgb(90, 90, 90);
             Controls.Add(footer);
 
-            backupLocationLabel.Location = new Point(30, 555);
+            backupLocationLabel.Location = new Point(30, 717);
             backupLocationLabel.Size = new Size(630, 32);
             backupLocationLabel.ForeColor = Color.FromArgb(70, 70, 70);
             backupLocationLabel.AutoEllipsis = true;
             Controls.Add(backupLocationLabel);
 
-            watermarkLabel.Text = "github.com/yin-yizhen/codex-api-switcher";
-            watermarkLabel.Location = new Point(300, 595);
+            watermarkLabel.Text = "github.com/2909272751/codex-api-switcher";
+            watermarkLabel.Location = new Point(300, 755);
             watermarkLabel.Size = new Size(360, 24);
             watermarkLabel.ForeColor = Color.FromArgb(145, 145, 145);
             watermarkLabel.TextAlign = ContentAlignment.MiddleRight;
@@ -417,17 +498,27 @@ namespace CodexApiSwitcher
 
                 urlBox.Text = !string.IsNullOrWhiteSpace(settings.BaseUrl)
                     ? settings.BaseUrl
-                    : (!string.IsNullOrWhiteSpace(status.BaseUrl) ? status.BaseUrl : "https://api.example.com");
+                    : (status.IsCustom && !string.IsNullOrWhiteSpace(status.BaseUrl) ? status.BaseUrl : "https://api.example.com");
                 thirdPartyModelBox.Text = !string.IsNullOrWhiteSpace(settings.ThirdPartyModel)
                     ? settings.ThirdPartyModel
-                    : (!string.IsNullOrWhiteSpace(status.Model) ? status.Model : "gpt-5.5");
+                    : (status.IsCustom && !string.IsNullOrWhiteSpace(status.Model) ? status.Model : "gpt-5.5");
                 officialModelBox.Text = !string.IsNullOrWhiteSpace(settings.OfficialModel)
                     ? settings.OfficialModel
                     : "gpt-5.5";
+                sub2ApiUrlBox.Text = !string.IsNullOrWhiteSpace(settings.Sub2ApiBaseUrl)
+                    ? settings.Sub2ApiBaseUrl
+                    : (status.IsSub2Api && !string.IsNullOrWhiteSpace(status.BaseUrl) ? status.BaseUrl : "http://127.0.0.1:8080/v1");
+                sub2ApiModelBox.Text = !string.IsNullOrWhiteSpace(settings.Sub2ApiModel)
+                    ? settings.Sub2ApiModel
+                    : (status.IsSub2Api && !string.IsNullOrWhiteSpace(status.Model) ? status.Model : "gpt-5.5");
                 keyBox.Text = string.Empty;
+                sub2ApiKeyBox.Text = string.Empty;
                 keyStateLabel.Text = service.HasStoredToken()
                     ? "已保存加密 Key；留空即可继续使用。"
                     : "尚未保存 Key。首次切换第三方时必须填写。";
+                sub2ApiKeyStateLabel.Text = service.HasStoredToken(SwitcherService.Sub2ApiProviderId)
+                    ? "已保存 Sub2API 加密 Key；留空即可继续使用。"
+                    : "尚未保存 Sub2API Key。首次切换时必须填写。";
                 RenderStatus(status);
                 SetButtonsEnabled(true);
             }
@@ -436,6 +527,7 @@ namespace CodexApiSwitcher
                 statusLabel.Text = "无法读取配置：" + ex.Message;
                 statusLabel.ForeColor = Color.Firebrick;
                 keyStateLabel.Text = string.Empty;
+                sub2ApiKeyStateLabel.Text = string.Empty;
                 SetButtonsEnabled(false);
             }
         }
@@ -450,11 +542,14 @@ namespace CodexApiSwitcher
         {
             officialButton.Enabled = enabled;
             thirdPartyButton.Enabled = enabled;
+            sub2ApiButton.Enabled = enabled;
             rollbackButton.Enabled = enabled;
             repairButton.Enabled = enabled;
             resetConfigButton.Enabled = enabled;
             testProviderButton.Enabled = enabled;
             listModelsButton.Enabled = enabled;
+            testSub2ApiButton.Enabled = enabled;
+            listSub2ApiModelsButton.Enabled = enabled;
         }
 
         private void TestProvider(object sender, EventArgs e)
@@ -472,29 +567,60 @@ namespace CodexApiSwitcher
             {
                 List<string> models = GetService().ListModels(urlBox.Text, keyBox.Text);
                 if (models.Count == 0) throw new InvalidOperationException("接口返回了空模型列表。");
-                using (Form picker = new Form())
-                using (ListBox list = new ListBox())
-                using (Button select = new Button())
-                {
-                    picker.Text = "选择第三方模型";
-                    picker.StartPosition = FormStartPosition.CenterParent;
-                    picker.ClientSize = new Size(460, 380);
-                    list.Dock = DockStyle.Top;
-                    list.Height = 330;
-                    list.Items.AddRange(models.Cast<object>().ToArray());
-                    select.Text = "使用所选模型";
-                    select.Dock = DockStyle.Bottom;
-                    select.Height = 38;
-                    select.DialogResult = DialogResult.OK;
-                    picker.Controls.Add(list);
-                    picker.Controls.Add(select);
-                    picker.AcceptButton = select;
-                    if (picker.ShowDialog(this) == DialogResult.OK && list.SelectedItem != null)
-                    {
-                        thirdPartyModelBox.Text = Convert.ToString(list.SelectedItem);
-                    }
-                }
+                ShowModelPicker(models, thirdPartyModelBox, "选择第三方模型");
             }, false);
+        }
+
+        private void TestSub2Api(object sender, EventArgs e)
+        {
+            RunAction(delegate
+            {
+                string result = GetService().TestProvider(
+                    sub2ApiUrlBox.Text,
+                    sub2ApiModelBox.Text,
+                    sub2ApiKeyBox.Text,
+                    SwitcherService.Sub2ApiProviderId);
+                MessageBox.Show(result, "Sub2API 测试通过", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }, false);
+        }
+
+        private void ListSub2ApiModels(object sender, EventArgs e)
+        {
+            RunAction(delegate
+            {
+                List<string> models = GetService().ListModels(
+                    sub2ApiUrlBox.Text,
+                    sub2ApiKeyBox.Text,
+                    SwitcherService.Sub2ApiProviderId);
+                if (models.Count == 0) throw new InvalidOperationException("Sub2API 返回了空模型列表。");
+                ShowModelPicker(models, sub2ApiModelBox, "选择 Sub2API 模型");
+            }, false);
+        }
+
+        private void ShowModelPicker(List<string> models, TextBox target, string title)
+        {
+            using (Form picker = new Form())
+            using (ListBox list = new ListBox())
+            using (Button select = new Button())
+            {
+                picker.Text = title;
+                picker.StartPosition = FormStartPosition.CenterParent;
+                picker.ClientSize = new Size(460, 380);
+                list.Dock = DockStyle.Top;
+                list.Height = 330;
+                list.Items.AddRange(models.Cast<object>().ToArray());
+                select.Text = "使用所选模型";
+                select.Dock = DockStyle.Bottom;
+                select.Height = 38;
+                select.DialogResult = DialogResult.OK;
+                picker.Controls.Add(list);
+                picker.Controls.Add(select);
+                picker.AcceptButton = select;
+                if (picker.ShowDialog(this) == DialogResult.OK && list.SelectedItem != null)
+                {
+                    target.Text = Convert.ToString(list.SelectedItem);
+                }
+            }
         }
 
         private void SwitchThirdParty(object sender, EventArgs e)
@@ -546,6 +672,60 @@ namespace CodexApiSwitcher
                 MessageBox.Show(
                     "已切换到第三方 Responses API，并已同步历史会话。\n\n请重新打开 Codex。",
                     "切换完成",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            });
+        }
+
+        private void SwitchSub2Api(object sender, EventArgs e)
+        {
+            RunAction(delegate
+            {
+                string url = sub2ApiUrlBox.Text.Trim().TrimEnd('/');
+                string model = sub2ApiModelBox.Text.Trim();
+                string key = sub2ApiKeyBox.Text.Trim();
+                if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(model))
+                {
+                    throw new InvalidOperationException("请填写 Sub2API Base URL 和模型名称。");
+                }
+
+                SwitcherService service = GetService();
+                if (string.IsNullOrWhiteSpace(key) && !service.HasStoredToken(SwitcherService.Sub2ApiProviderId))
+                {
+                    throw new InvalidOperationException("首次切换 Sub2API 时必须填写 Sub2API 用户 Key。");
+                }
+
+                Uri providerUri;
+                if (Uri.TryCreate(url, UriKind.Absolute, out providerUri) &&
+                    string.Equals(providerUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                    !providerUri.IsLoopback)
+                {
+                    DialogResult insecure = MessageBox.Show(
+                        "该远程 Sub2API 使用明文 HTTP。API Key、代码和聊天内容可能被网络中的第三方读取或篡改。\n\n仍要继续吗？",
+                        "不安全的远程 Sub2API 地址",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+                    if (insecure != DialogResult.Yes) return;
+                }
+
+                if (preflightCheckBox.Checked)
+                {
+                    string probe = service.TestProvider(url, model, key, SwitcherService.Sub2ApiProviderId);
+                    if (probe.IndexOf("WARNING:", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        DialogResult continueSwitch = MessageBox.Show(
+                            probe + "\n\n普通 Responses 请求可用，但长会话压缩可能失败。仍要切换吗？",
+                            "Sub2API 兼容性预检警告",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Warning);
+                        if (continueSwitch != DialogResult.Yes) return;
+                    }
+                }
+
+                service.SwitchToSub2Api(url, model, key);
+                MessageBox.Show(
+                    "已切换到 Sub2API，并关闭 Responses WebSocket、同步历史会话。\n\n请重新打开 Codex。",
+                    "Sub2API 切换完成",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
             });
@@ -667,7 +847,8 @@ namespace CodexApiSwitcher
 
     internal sealed class SwitcherService
     {
-        private const string ProviderId = "custom";
+        internal const string CustomProviderId = "custom";
+        internal const string Sub2ApiProviderId = "sub2api";
         private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("CodexApiSwitcher-v1");
 
         private readonly string root;
@@ -675,6 +856,7 @@ namespace CodexApiSwitcher
         private readonly string configPath;
         private readonly string dataDirectory;
         private readonly string credentialPath;
+        private readonly string sub2ApiCredentialPath;
         private readonly string settingsPath;
         private readonly string backupDirectory;
         private readonly string transactionDirectory;
@@ -692,6 +874,7 @@ namespace CodexApiSwitcher
             configPath = Path.Combine(root, "config.toml");
             dataDirectory = Path.Combine(root, "api-switcher");
             credentialPath = Path.Combine(dataDirectory, "credential.dat");
+            sub2ApiCredentialPath = Path.Combine(dataDirectory, "sub2api-credential.dat");
             settingsPath = Path.Combine(dataDirectory, "settings.dat");
             backupDirectory = Path.Combine(root, "config-switcher-backups");
             transactionDirectory = Path.Combine(root, "api-switcher", "transactions");
@@ -703,7 +886,8 @@ namespace CodexApiSwitcher
             List<string> lines = ReadConfig();
             string provider = GetTopLevelValue(lines, "model_provider");
             string model = GetTopLevelValue(lines, "model");
-            string section = "model_providers." + ProviderId;
+            string activeManagedProvider = IsManagedProvider(provider) ? provider : CustomProviderId;
+            string section = "model_providers." + activeManagedProvider;
             string url = GetSectionValue(lines, section, "base_url");
             bool helperAuth = SectionExists(lines, section + ".auth");
             bool reusedLogin = string.Equals(
@@ -746,23 +930,37 @@ namespace CodexApiSwitcher
                 if (name == "url") settings.BaseUrl = value;
                 if (name == "thirdModel") settings.ThirdPartyModel = value;
                 if (name == "officialModel") settings.OfficialModel = value;
+                if (name == "sub2Url") settings.Sub2ApiBaseUrl = value;
+                if (name == "sub2Model") settings.Sub2ApiModel = value;
             }
             return settings;
         }
 
         internal bool HasStoredToken()
         {
-            return File.Exists(credentialPath) && new FileInfo(credentialPath).Length > 0;
+            return HasStoredToken(CustomProviderId);
+        }
+
+        internal bool HasStoredToken(string profile)
+        {
+            string path = GetCredentialPath(profile);
+            return File.Exists(path) && new FileInfo(path).Length > 0;
         }
 
         internal string ReadToken()
         {
-            if (!HasStoredToken())
+            return ReadToken(CustomProviderId);
+        }
+
+        internal string ReadToken(string profile)
+        {
+            string path = GetCredentialPath(profile);
+            if (!HasStoredToken(profile))
             {
-                throw new InvalidOperationException("No encrypted third-party API key is stored.");
+                throw new InvalidOperationException("No encrypted API key is stored for provider: " + profile);
             }
 
-            byte[] encrypted = File.ReadAllBytes(credentialPath);
+            byte[] encrypted = File.ReadAllBytes(path);
             byte[] plain = ProtectedData.Unprotect(encrypted, Entropy, DataProtectionScope.CurrentUser);
             try
             {
@@ -776,7 +974,12 @@ namespace CodexApiSwitcher
 
         internal List<string> ListModels(string url, string key)
         {
-            string token = string.IsNullOrWhiteSpace(key) ? ReadToken() : key.Trim();
+            return ListModels(url, key, CustomProviderId);
+        }
+
+        internal List<string> ListModels(string url, string key, string profile)
+        {
+            string token = string.IsNullOrWhiteSpace(key) ? ReadToken(profile) : key.Trim();
             string baseUrl = NormalizeBaseUrl(url);
             using (HttpClient client = CreateApiClient(token))
             {
@@ -801,7 +1004,12 @@ namespace CodexApiSwitcher
 
         internal string TestProvider(string url, string model, string key)
         {
-            string token = string.IsNullOrWhiteSpace(key) ? ReadToken() : key.Trim();
+            return TestProvider(url, model, key, CustomProviderId);
+        }
+
+        internal string TestProvider(string url, string model, string key, string profile)
+        {
+            string token = string.IsNullOrWhiteSpace(key) ? ReadToken(profile) : key.Trim();
             string baseUrl = NormalizeBaseUrl(url);
             Dictionary<string, object> payload = new Dictionary<string, object>();
             payload["model"] = model.Trim();
@@ -880,6 +1088,22 @@ namespace CodexApiSwitcher
 
         internal void SwitchToThirdParty(string url, string model, string key)
         {
+            SwitchToManagedProvider(url, model, key, CustomProviderId, "custom", false);
+        }
+
+        internal void SwitchToSub2Api(string url, string model, string key)
+        {
+            SwitchToManagedProvider(url, model, key, Sub2ApiProviderId, "Sub2API", true);
+        }
+
+        private void SwitchToManagedProvider(
+            string url,
+            string model,
+            string key,
+            string targetProvider,
+            string displayName,
+            bool disableWebSockets)
+        {
             AssertConfig();
             string cleanUrl = NormalizeBaseUrl(url);
             string cleanModel = (model ?? string.Empty).Trim();
@@ -895,27 +1119,27 @@ namespace CodexApiSwitcher
             Directory.CreateDirectory(dataDirectory);
             if (!string.IsNullOrWhiteSpace(key))
             {
-                SaveToken(key.Trim());
+                SaveToken(key.Trim(), targetProvider);
             }
-            else if (!HasStoredToken())
+            else if (!HasStoredToken(targetProvider))
             {
-                throw new InvalidOperationException("An API key is required for the first third-party switch.");
+                throw new InvalidOperationException("An API key is required for the first " + displayName + " switch.");
             }
 
             AssertCodexStoppedAndDatabasesAvailable();
             List<string> lines = ReadConfig();
             string currentProvider = GetTopLevelValue(lines, "model_provider");
             string currentModel = GetTopLevelValue(lines, "model");
-            SwitchTransaction transaction = SwitchTransaction.Begin(root, configPath, GetStateDatabasePaths(), currentProvider, ProviderId);
+            SwitchTransaction transaction = SwitchTransaction.Begin(root, configPath, GetStateDatabasePaths(), currentProvider, targetProvider);
             try
             {
                 BackupConfig();
                 EnsureCredentialHelperInstalled();
-                SynchronizeConversationProvider(ProviderId);
-                SetTopLevelValue(lines, "model_provider", ProviderId);
+                SynchronizeConversationProvider(targetProvider);
+                SetTopLevelValue(lines, "model_provider", targetProvider);
                 SetTopLevelValue(lines, "model", cleanModel);
                 RemoveProviderSections(lines);
-                AddProviderSections(lines, cleanUrl);
+                AddProviderSections(lines, targetProvider, displayName, cleanUrl, disableWebSockets);
                 WriteConfigAtomically(lines);
                 transaction.Complete();
             }
@@ -926,8 +1150,16 @@ namespace CodexApiSwitcher
             }
 
             StoredSettings settings = LoadSettings();
-            settings.BaseUrl = cleanUrl;
-            settings.ThirdPartyModel = cleanModel;
+            if (string.Equals(targetProvider, Sub2ApiProviderId, StringComparison.Ordinal))
+            {
+                settings.Sub2ApiBaseUrl = cleanUrl;
+                settings.Sub2ApiModel = cleanModel;
+            }
+            else
+            {
+                settings.BaseUrl = cleanUrl;
+                settings.ThirdPartyModel = cleanModel;
+            }
             if (string.Equals(currentProvider, "openai", StringComparison.OrdinalIgnoreCase) &&
                 !string.IsNullOrWhiteSpace(currentModel))
             {
@@ -1132,19 +1364,32 @@ namespace CodexApiSwitcher
             }
         }
 
-        private void SaveToken(string token)
+        private void SaveToken(string token, string profile)
         {
             byte[] plain = Encoding.UTF8.GetBytes(token);
             byte[] encrypted = ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser);
             try
             {
-                WriteBytesAtomically(credentialPath, encrypted);
+                WriteBytesAtomically(GetCredentialPath(profile), encrypted);
             }
             finally
             {
                 Array.Clear(plain, 0, plain.Length);
                 Array.Clear(encrypted, 0, encrypted.Length);
             }
+        }
+
+        private string GetCredentialPath(string profile)
+        {
+            if (string.Equals(profile, CustomProviderId, StringComparison.OrdinalIgnoreCase)) return credentialPath;
+            if (string.Equals(profile, Sub2ApiProviderId, StringComparison.OrdinalIgnoreCase)) return sub2ApiCredentialPath;
+            throw new InvalidOperationException("Unsupported credential profile: " + profile);
+        }
+
+        private static bool IsManagedProvider(string provider)
+        {
+            return string.Equals(provider, CustomProviderId, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(provider, Sub2ApiProviderId, StringComparison.OrdinalIgnoreCase);
         }
 
         private bool IsRealCodexRoot()
@@ -1207,7 +1452,7 @@ namespace CodexApiSwitcher
 
             AssertCodexStoppedAndDatabasesAvailable();
 
-            if (targetProvider != "openai" && targetProvider != ProviderId)
+            if (targetProvider != "openai" && !IsManagedProvider(targetProvider))
             {
                 throw new InvalidOperationException("Unsupported provider: " + targetProvider);
             }
@@ -1504,6 +1749,8 @@ namespace CodexApiSwitcher
             lines.Add("url=" + EncodeSetting(settings.BaseUrl));
             lines.Add("thirdModel=" + EncodeSetting(settings.ThirdPartyModel));
             lines.Add("officialModel=" + EncodeSetting(settings.OfficialModel));
+            lines.Add("sub2Url=" + EncodeSetting(settings.Sub2ApiBaseUrl));
+            lines.Add("sub2Model=" + EncodeSetting(settings.Sub2ApiModel));
             WriteTextAtomically(settingsPath, lines);
         }
 
@@ -1684,8 +1931,10 @@ namespace CodexApiSwitcher
                 if (match.Success)
                 {
                     string section = match.Groups[1].Value;
-                    skip = string.Equals(section, "model_providers." + ProviderId, StringComparison.Ordinal)
-                        || section.StartsWith("model_providers." + ProviderId + ".", StringComparison.Ordinal);
+                    skip = string.Equals(section, "model_providers." + CustomProviderId, StringComparison.Ordinal)
+                        || section.StartsWith("model_providers." + CustomProviderId + ".", StringComparison.Ordinal)
+                        || string.Equals(section, "model_providers." + Sub2ApiProviderId, StringComparison.Ordinal)
+                        || section.StartsWith("model_providers." + Sub2ApiProviderId + ".", StringComparison.Ordinal);
                 }
                 if (!skip)
                 {
@@ -1701,19 +1950,25 @@ namespace CodexApiSwitcher
             lines.AddRange(result);
         }
 
-        private void AddProviderSections(List<string> lines, string url)
+        private void AddProviderSections(
+            List<string> lines,
+            string providerId,
+            string displayName,
+            string url,
+            bool disableWebSockets)
         {
             string escapedExe = EscapeToml(helperPath);
             string escapedRoot = EscapeToml(root);
             lines.Add(string.Empty);
-            lines.Add("[model_providers." + ProviderId + "]");
-            lines.Add("name = \"custom\"");
+            lines.Add("[model_providers." + providerId + "]");
+            lines.Add("name = \"" + EscapeToml(displayName) + "\"");
             lines.Add("wire_api = \"responses\"");
             lines.Add("base_url = \"" + EscapeToml(url) + "\"");
+            if (disableWebSockets) lines.Add("supports_websockets = false");
             lines.Add(string.Empty);
-            lines.Add("[model_providers." + ProviderId + ".auth]");
+            lines.Add("[model_providers." + providerId + ".auth]");
             lines.Add("command = \"" + escapedExe + "\"");
-            lines.Add("args = [\"--emit-token\", \"--root\", \"" + escapedRoot + "\"]");
+            lines.Add("args = [\"--emit-token\", \"--root\", \"" + escapedRoot + "\", \"--profile\", \"" + providerId + "\"]");
             lines.Add("timeout_ms = 5000");
             lines.Add("refresh_interval_ms = 0");
         }
@@ -2407,7 +2662,17 @@ namespace CodexApiSwitcher
 
         internal bool IsThirdParty
         {
-            get { return string.Equals(Provider, "custom", StringComparison.OrdinalIgnoreCase); }
+            get { return IsCustom || IsSub2Api; }
+        }
+
+        internal bool IsCustom
+        {
+            get { return string.Equals(Provider, SwitcherService.CustomProviderId, StringComparison.OrdinalIgnoreCase); }
+        }
+
+        internal bool IsSub2Api
+        {
+            get { return string.Equals(Provider, SwitcherService.Sub2ApiProviderId, StringComparison.OrdinalIgnoreCase); }
         }
 
         internal string ToDisplayString()
@@ -2420,7 +2685,8 @@ namespace CodexApiSwitcher
             string auth = UsesCredentialHelper
                 ? "独立加密 Key"
                 : (ReusesOpenAiLogin ? "复用 OpenAI 登录" : "未检测到认证");
-            return "第三方 Responses API | " + BaseUrl + " | 模型 " + Model + " | " + auth;
+            string mode = IsSub2Api ? "Sub2API" : "第三方 Responses API";
+            return mode + " | " + BaseUrl + " | 模型 " + Model + " | " + auth;
         }
     }
 
@@ -2429,5 +2695,7 @@ namespace CodexApiSwitcher
         internal string BaseUrl = string.Empty;
         internal string ThirdPartyModel = string.Empty;
         internal string OfficialModel = string.Empty;
+        internal string Sub2ApiBaseUrl = string.Empty;
+        internal string Sub2ApiModel = string.Empty;
     }
 }
