@@ -43,7 +43,7 @@ CodexApiSwitcher.exe
   切换完成后新建的聊天不在旧事务清单中，因此不会被删除或从数据库覆盖掉。
 - credential helper 会固定安装到 api-switcher\bin，移动界面程序后仍能读取加密 Key。
 - 工具会校验 TOML 结构、Codex 进程和 SQLite 文件锁；检测失败时不会写入。
-- 远程 API 必须使用 HTTPS；只有 localhost/127.0.0.1 等本地 CPA 地址可使用 HTTP。
+- 允许使用远程 HTTP API；界面会提示 API Key、代码和聊天内容可能被明文传输。
 - 切到第三方前会记住当前官方模型，切回时无需依赖硬编码的默认模型。
 - “一键恢复基础配置”只重建 model/model_provider，并清理损坏的 custom provider 段。
 - 如果侧栏显示“暂无对话”，请先彻底退出 Codex，再点击“修复会话列表”。

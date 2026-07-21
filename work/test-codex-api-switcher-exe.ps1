@@ -43,7 +43,7 @@ Copy-Item -LiteralPath $statePath -Destination $activeStatePath
 $originalPath = $env:PATH
 try {
     $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-    & $exe --switch-third-party --root $root --url "https://api.example.test" --model "test-model" --key "test-token-not-a-real-key"
+    & $exe --switch-third-party --root $root --url "http://api.example.test" --model "test-model" --key "test-token-not-a-real-key"
 } finally {
     $env:PATH = $originalPath
 }
@@ -52,7 +52,7 @@ if ($LASTEXITCODE -ne 0) { throw "Third-party switch failed with exit code $LAST
 $third = Get-Content -LiteralPath $config -Raw -Encoding UTF8
 if ($third -notmatch '(?m)^model_provider = "custom"\r?$') { throw "Third-party provider missing." }
 if ($third -notmatch '(?m)^wire_api = "responses"\r?$') { throw "Responses wire API missing." }
-if ($third -notmatch '(?m)^base_url = "https://api\.example\.test/v1"\r?$') { throw "Base URL was not normalized to /v1." }
+if ($third -notmatch '(?m)^base_url = "http://api\.example\.test/v1"\r?$') { throw "Remote HTTP Base URL was rejected or not normalized to /v1." }
 if ($third -notmatch '(?m)^\[model_providers\.custom\.auth\]\r?$') { throw "Credential helper missing." }
 if ($third -notmatch '(?m)^\[mcp_servers\.example\]\r?$') { throw "MCP config was not preserved." }
 if ($third -match 'test-token-not-a-real-key') { throw "Plaintext test key leaked into config." }

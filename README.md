@@ -23,7 +23,7 @@ Codex API Switcher 是一个 Windows 图形界面工具，用来在 Codex Deskto
 - 使用事务清单执行增量完整回滚：恢复旧会话字段，同时保留切换后新建的会话。
 - 将 credential helper 安装到 Codex 数据目录的稳定路径，移动主程序不影响取 Key。
 - 解析并校验 TOML 结构，写入损坏配置前停止操作。
-- 检查 Codex 进程和 SQLite 文件锁；远程服务强制 HTTPS，本地 CPA 可使用 HTTP。
+- 检查 Codex 进程和 SQLite 文件锁；允许 HTTP provider，但远程 HTTP 会显示明文传输警告。
 - 记住切换前的官方模型，不再依赖硬编码模型名。
 - 在模型/provider 配置损坏时，一键重建基础配置，同时保留无关配置。
 - Windows 10/11 单 EXE 运行，不需要安装 Python 或 SQLite。

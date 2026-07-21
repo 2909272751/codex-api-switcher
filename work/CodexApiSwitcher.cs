@@ -515,6 +515,19 @@ namespace CodexApiSwitcher
                     throw new InvalidOperationException("首次切换第三方 API 时必须填写 API Key。");
                 }
 
+                Uri providerUri;
+                if (Uri.TryCreate(url, UriKind.Absolute, out providerUri) &&
+                    string.Equals(providerUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                    !providerUri.IsLoopback)
+                {
+                    DialogResult insecure = MessageBox.Show(
+                        "该远程 API 使用明文 HTTP。API Key、代码和聊天内容可能被网络中的第三方读取或篡改。\n\n仍要继续吗？",
+                        "不安全的远程 HTTP 地址",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+                    if (insecure != DialogResult.Yes) return;
+                }
+
                 if (preflightCheckBox.Checked)
                 {
                     string probe = service.TestProvider(url, model, key);
@@ -1126,12 +1139,6 @@ namespace CodexApiSwitcher
             {
                 throw new InvalidOperationException("Base URL is not a valid absolute URL.");
             }
-            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-                !(string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) && uri.IsLoopback))
-            {
-                throw new InvalidOperationException("Remote API URLs must use HTTPS. HTTP is allowed only for localhost/loopback services such as a local CPA instance.");
-            }
-
             string path = uri.AbsolutePath.TrimEnd('/');
             string lower = path.ToLowerInvariant();
             string[] endpointSuffixes =
